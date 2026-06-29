@@ -1,0 +1,33 @@
+{
+  "mcpServers": {
+    "coreclaw-remote-http": {
+      "url": "https://your-server.example.com/mcp",
+      "headers": {
+        "api-key": "your-coreclaw-token"
+      }
+    },
+    "coreclaw-local-stdio": {
+      "command": "/absolute/path/to/coreclaw-mcp-server",
+      "args": [
+        "--transport",
+        "stdio",
+        "--base-url",
+        "https://openapi.coreclaw.com"
+      ],
+      "env": {
+        "CORECLAW_API_KEY": "your-coreclaw-token"
+      }
+    },
+    "coreclaw-local-http": {
+      "command": "/absolute/path/to/coreclaw-mcp-server",
+      "args": [
+        "--transport",
+        "http",
+        "--port",
+        "3000",
+        "--base-url",
+        "https://openapi.coreclaw.com"
+      ]
+    }
+  }
+}

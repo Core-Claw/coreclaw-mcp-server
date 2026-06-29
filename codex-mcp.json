@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "coreclaw": {
+      "url": "https://mcp.coreclaw.com/mcp",
+      "headers": {
+        "api-key": "your-coreclaw-token"
+      }
+    }
+  }
+}

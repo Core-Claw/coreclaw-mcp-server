@@ -1,0 +1,11 @@
+coreclaw-mcp-server
+*.exe
+*.test
+*.out
+coverage.txt
+dist/
+vendor/
+.DS_Store
+.env
+codex-mcp.local.json
+.cursor/

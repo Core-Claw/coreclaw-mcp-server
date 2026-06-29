@@ -1,0 +1,71 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      deploy_dir:
+        description: Remote deploy directory
+        required: true
+        default: /opt/coreclaw-mcp-server
+      service_name:
+        description: systemd service name
+        required: true
+        default: coreclaw-mcp-server
+      mcp_port:
+        description: HTTP port on the server
+        required: true
+        default: "3000"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build linux binary
+        run: |
+          mkdir -p dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "-s -w -X main.version=${GITHUB_SHA::7}" -o dist/coreclaw-mcp-server-linux-amd64 .
+      - name: Install SSH tooling
+        run: sudo apt-get update && sudo apt-get install -y sshpass
+      - name: Upload and restart service
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+          CORECLAW_BASE_URL: ${{ secrets.CORECLAW_BASE_URL }}
+          DEPLOY_DIR: ${{ inputs.deploy_dir }}
+          SERVICE_NAME: ${{ inputs.service_name }}
+          MCP_PORT: ${{ inputs.mcp_port }}
+        run: |
+          set -euo pipefail
+          : "${SSH_HOST:?missing SSH_HOST secret}"
+          : "${SSH_USER:?missing SSH_USER secret}"
+          : "${SSH_PASSWORD:?missing SSH_PASSWORD secret}"
+          SSH_PORT="${SSH_PORT:-22}"
+          CORECLAW_BASE_URL="${CORECLAW_BASE_URL:-https://openapi.coreclaw.com}"
+          SSH_BASE=(sshpass -p "$SSH_PASSWORD" ssh -p "$SSH_PORT" -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST")
+          SCP_BASE=(sshpass -p "$SSH_PASSWORD" scp -P "$SSH_PORT" -o StrictHostKeyChecking=accept-new)
+          TMP="/tmp/coreclaw-mcp-server.${GITHUB_RUN_ID}"
+          "${SCP_BASE[@]}" dist/coreclaw-mcp-server-linux-amd64 "$SSH_USER@$SSH_HOST:$TMP"
+          "${SSH_BASE[@]}" "sudo mkdir -p '$DEPLOY_DIR' && sudo mv '$TMP' '$DEPLOY_DIR/coreclaw-mcp-server' && sudo chmod 0755 '$DEPLOY_DIR/coreclaw-mcp-server'"
+          {
+            echo "[Unit]"
+            echo "Description=CoreClaw MCP Server"
+            echo "After=network.target"
+            echo
+            echo "[Service]"
+            echo "WorkingDirectory=$DEPLOY_DIR"
+            echo "ExecStart=$DEPLOY_DIR/coreclaw-mcp-server --transport http --port $MCP_PORT --base-url $CORECLAW_BASE_URL"
+            echo "Restart=always"
+            echo "RestartSec=3"
+            echo
+            echo "[Install]"
+            echo "WantedBy=multi-user.target"
+          } | "${SSH_BASE[@]}" "sudo tee /etc/systemd/system/$SERVICE_NAME.service >/dev/null"
+          "${SSH_BASE[@]}" "sudo systemctl daemon-reload && sudo systemctl enable '$SERVICE_NAME' && sudo systemctl restart '$SERVICE_NAME' && sudo systemctl --no-pager --full status '$SERVICE_NAME' | head -n 20"
