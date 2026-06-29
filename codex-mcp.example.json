@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "coreclaw-remote-http": {
-      "url": "https://your-server.example.com/mcp",
+    "coreclaw-hosted": {
+      "url": "https://mcp.coreclaw.com/mcp",
       "headers": {
         "api-key": "your-coreclaw-token"
       }

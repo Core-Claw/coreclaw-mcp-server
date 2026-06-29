@@ -13,6 +13,22 @@ This project exposes CoreClaw OpenAPI v2 as MCP tools. The source of truth is th
 
 Every non-excluded operation must have exactly one MCP tool and one REST shim route at `/mcp/<tool_name>`.
 
+## Client Entry Contract
+
+The first-class hosted endpoint is:
+
+```text
+https://mcp.coreclaw.com/mcp
+```
+
+Documentation and example MCP client configs must present the hosted endpoint before local stdio or local HTTP usage. Local transports remain development and fallback paths.
+
+The MCP `initialize` response must include:
+
+- `serverInfo.title`: `CoreClaw MCP Server`
+- `serverInfo.websiteUrl`: `https://mcp.coreclaw.com/mcp`
+- `instructions`: bilingual workflow guidance covering worker discovery, schema inspection, execution, polling/status, results/export/logs, rerun, abort, auth headers, and excluded internal APIs
+
 ## Naming
 
 Use `snake_case` names and CoreClaw v2 nouns:
@@ -29,6 +45,28 @@ Tool names should mirror the endpoint intent:
 - `run_worker`
 - `list_worker_run_results`
 - `export_worker_last_run_results`
+
+## Workflow Order
+
+Register and expose tools in the order a model should normally use them:
+
+1. Discovery and preflight: proxy regions, public store workers, private workers, worker detail, worker input schema, saved tasks, account info.
+2. Execution: ad-hoc worker runs and saved task runs.
+3. Run lookup: list runs, last run, specific run, worker-specific last run.
+4. Output retrieval: result rows, export links, and logs for last/specific/worker-specific runs.
+5. Repeat and control: rerun tools, then abort tools.
+
+This order is part of the MCP surface and must be tested through `tools/list`, not only through internal slices.
+
+## Tool Annotations
+
+Every tool must expose explicit MCP annotations:
+
+- `title`: a human-readable title derived from the tool name.
+- `readOnlyHint`: `true` for `GET` tools, `false` for tools that change run state.
+- `destructiveHint`: `true` for `POST` tools in this API because they start, repeat, or stop CoreClaw runs; `false` for `GET` tools.
+- `idempotentHint`: `true` for `GET` tools and abort controls, `false` for run/rerun tools.
+- `openWorldHint`: `true` for run/rerun tools that execute CoreClaw workers and may interact with external sites; `false` for CoreClaw-only metadata, status, results, export, log, and abort tools.
 
 ## Description Format
 
@@ -75,5 +113,8 @@ Required checks:
 - Tool registry test proving 28 exposed tools and the three excluded endpoints absent
 - MCP tools/list test proving 28 tools are visible to MCP clients
 - REST handler test proving 28 `/mcp/<tool_name>` handlers
+- Initialize test proving server instructions and hosted endpoint metadata are visible to MCP clients
+- Annotation test proving every MCP tool has explicit behavior hints
+- Workflow order test proving `tools/list` follows the intended discovery-to-control order
 
 `go test -race ./...` is required in CI. On Windows it requires a C compiler; local Windows runs may skip it when `gcc` is unavailable, but GitHub Actions must run it on Ubuntu.

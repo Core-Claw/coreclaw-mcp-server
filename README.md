@@ -2,6 +2,31 @@
 
 CoreClaw MCP Server exposes the public CoreClaw OpenAPI v2 surface to MCP clients such as Codex, Claude Desktop, Cursor, n8n, and any client that supports stdio or Streamable HTTP MCP.
 
+## Hosted Endpoint
+
+The first-class MCP entry point is the hosted Streamable HTTP endpoint:
+
+```text
+https://mcp.coreclaw.com/mcp
+```
+
+Use this config when the hosted deployment has been updated to this repository version:
+
+```json
+{
+  "mcpServers": {
+    "coreclaw": {
+      "url": "https://mcp.coreclaw.com/mcp",
+      "headers": {
+        "api-key": "your-coreclaw-token"
+      }
+    }
+  }
+}
+```
+
+The server accepts `api-key`, `X-API-Key`, or `Authorization: Bearer <token>` from MCP clients and forwards CoreClaw API auth upstream as `Authorization: Bearer <token>`.
+
 ## Scope
 
 - API source of truth: `exported-api-docs/openapi.json` and `exported-api-docs/endpoints.csv`
@@ -10,6 +35,8 @@ CoreClaw MCP Server exposes the public CoreClaw OpenAPI v2 surface to MCP client
 - Transports: stdio and Streamable HTTP
 - REST compatibility shim: `POST /mcp/<tool_name>`
 - Auth: incoming `api-key`, `X-API-Key`, or `Authorization: Bearer <token>` is forwarded to CoreClaw as `Authorization: Bearer <token>`
+- Server instructions: returned during MCP `initialize` with the recommended CoreClaw workflow in English and Chinese
+- Tool annotations: every tool exposes explicit `title`, `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`
 
 ## Build And Test
 
@@ -56,38 +83,57 @@ The HTTP server exposes:
 
 ## MCP Tools
 
+Tools are registered in the same order a model should normally use them: discovery and preflight, execution, run lookup, result/log/export retrieval, then repeat or abort controls.
+
 | Tool | API |
 | --- | --- |
 | `list_proxy_regions` | `GET /api/v2/proxy/region` |
 | `list_store_workers` | `GET /api/v2/store` |
-| `get_account_info` | `GET /api/v2/users/account` |
-| `list_worker_runs` | `GET /api/v2/worker-runs` |
-| `get_last_worker_run` | `GET /api/v2/worker-runs/last` |
-| `abort_last_worker_run` | `POST /api/v2/worker-runs/last/abort` |
-| `export_last_worker_run_results` | `GET /api/v2/worker-runs/last/export` |
-| `get_last_worker_run_log` | `GET /api/v2/worker-runs/last/log` |
-| `rerun_last_worker_run` | `POST /api/v2/worker-runs/last/rerun` |
-| `list_last_worker_run_results` | `GET /api/v2/worker-runs/last/result` |
-| `get_worker_run` | `GET /api/v2/worker-runs/{runId}` |
-| `abort_worker_run` | `POST /api/v2/worker-runs/{runId}/abort` |
-| `get_worker_run_log` | `GET /api/v2/worker-runs/{runId}/log` |
-| `rerun_worker_run` | `POST /api/v2/worker-runs/{runId}/rerun` |
-| `list_worker_run_results` | `GET /api/v2/worker-runs/{runId}/result` |
-| `export_worker_run_results` | `GET /api/v2/worker-runs/{runId}/result/export` |
-| `list_worker_tasks` | `GET /api/v2/worker-tasks` |
-| `run_worker_task` | `POST /api/v2/worker-tasks/{workerTaskId}/runs` |
 | `list_workers` | `GET /api/v2/workers` |
 | `get_worker` | `GET /api/v2/workers/{workerId}` |
 | `get_worker_input_schema` | `GET /api/v2/workers/{workerId}/input-schema` |
+| `list_worker_tasks` | `GET /api/v2/worker-tasks` |
+| `get_account_info` | `GET /api/v2/users/account` |
 | `run_worker` | `POST /api/v2/workers/{workerId}/runs` |
+| `run_worker_task` | `POST /api/v2/worker-tasks/{workerTaskId}/runs` |
+| `list_worker_runs` | `GET /api/v2/worker-runs` |
+| `get_last_worker_run` | `GET /api/v2/worker-runs/last` |
+| `get_worker_run` | `GET /api/v2/worker-runs/{runId}` |
 | `get_worker_last_run` | `GET /api/v2/workers/{workerId}/runs/last` |
-| `abort_worker_last_run` | `POST /api/v2/workers/{workerId}/runs/last/abort` |
+| `list_last_worker_run_results` | `GET /api/v2/worker-runs/last/result` |
+| `export_last_worker_run_results` | `GET /api/v2/worker-runs/last/export` |
+| `get_last_worker_run_log` | `GET /api/v2/worker-runs/last/log` |
+| `list_worker_run_results` | `GET /api/v2/worker-runs/{runId}/result` |
+| `export_worker_run_results` | `GET /api/v2/worker-runs/{runId}/result/export` |
+| `get_worker_run_log` | `GET /api/v2/worker-runs/{runId}/log` |
+| `list_worker_last_run_results` | `GET /api/v2/workers/{workerId}/runs/last/result` |
 | `export_worker_last_run_results` | `GET /api/v2/workers/{workerId}/runs/last/export` |
 | `get_worker_last_run_log` | `GET /api/v2/workers/{workerId}/runs/last/log` |
+| `rerun_last_worker_run` | `POST /api/v2/worker-runs/last/rerun` |
+| `rerun_worker_run` | `POST /api/v2/worker-runs/{runId}/rerun` |
 | `rerun_worker_last_run` | `POST /api/v2/workers/{workerId}/runs/last/rerun` |
-| `list_worker_last_run_results` | `GET /api/v2/workers/{workerId}/runs/last/result` |
+| `abort_last_worker_run` | `POST /api/v2/worker-runs/last/abort` |
+| `abort_worker_run` | `POST /api/v2/worker-runs/{runId}/abort` |
+| `abort_worker_last_run` | `POST /api/v2/workers/{workerId}/runs/last/abort` |
 
 ## Example MCP Config
+
+Hosted HTTP:
+
+```json
+{
+  "mcpServers": {
+    "coreclaw": {
+      "url": "https://mcp.coreclaw.com/mcp",
+      "headers": {
+        "api-key": "your-coreclaw-token"
+      }
+    }
+  }
+}
+```
+
+Local stdio:
 
 ```json
 {
@@ -103,13 +149,13 @@ The HTTP server exposes:
 }
 ```
 
-Remote HTTP:
+Local HTTP:
 
 ```json
 {
   "mcpServers": {
     "coreclaw": {
-      "url": "https://your-server.example.com/mcp",
+      "url": "http://localhost:3000/mcp",
       "headers": {
         "api-key": "your-coreclaw-token"
       }

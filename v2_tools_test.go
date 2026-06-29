@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"strings"
 	"testing"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
@@ -69,6 +71,68 @@ func TestV2PublicToolRegistryMatchesOpenAPIScope(t *testing.T) {
 		if !seenNames[name] {
 			t.Fatalf("expected public v2 tool %q to be registered", name)
 		}
+	}
+}
+
+func TestV2ToolWorkflowOrder(t *testing.T) {
+	expected := []string{
+		"list_proxy_regions",
+		"list_store_workers",
+		"list_workers",
+		"get_worker",
+		"get_worker_input_schema",
+		"list_worker_tasks",
+		"get_account_info",
+		"run_worker",
+		"run_worker_task",
+		"list_worker_runs",
+		"get_last_worker_run",
+		"get_worker_run",
+		"get_worker_last_run",
+		"list_last_worker_run_results",
+		"export_last_worker_run_results",
+		"get_last_worker_run_log",
+		"list_worker_run_results",
+		"export_worker_run_results",
+		"get_worker_run_log",
+		"list_worker_last_run_results",
+		"export_worker_last_run_results",
+		"get_worker_last_run_log",
+		"rerun_last_worker_run",
+		"rerun_worker_run",
+		"rerun_worker_last_run",
+		"abort_last_worker_run",
+		"abort_worker_run",
+		"abort_worker_last_run",
+	}
+
+	specs := v2ToolSpecs()
+	if len(specs) != len(expected) {
+		t.Fatalf("expected %d workflow-ordered tools, got %d", len(expected), len(specs))
+	}
+	for i, spec := range specs {
+		if spec.Name != expected[i] {
+			t.Fatalf("tool order mismatch at %d: expected %s, got %s", i, expected[i], spec.Name)
+		}
+	}
+}
+
+func TestV2ToolsExposeExplicitMCPAnnotations(t *testing.T) {
+	for _, spec := range v2ToolSpecs() {
+		tool := spec.Tool()
+		if tool.Annotations.Title == "" {
+			t.Fatalf("tool %s must expose a human-readable title annotation", spec.Name)
+		}
+
+		expectReadOnly := spec.Method == http.MethodGet
+		expectDestructive := spec.Method == http.MethodPost
+		expectIdempotent := spec.Method == http.MethodGet || strings.Contains(spec.Name, "abort")
+		expectOpenWorld := strings.HasPrefix(spec.Name, "run_") || strings.HasPrefix(spec.Name, "rerun_")
+
+		assertBoolPtr(t, spec.Name, "readOnlyHint", tool.Annotations.ReadOnlyHint, expectReadOnly)
+		assertBoolPtr(t, spec.Name, "destructiveHint", tool.Annotations.DestructiveHint, expectDestructive)
+		assertBoolPtr(t, spec.Name, "idempotentHint", tool.Annotations.IdempotentHint, expectIdempotent)
+		assertBoolPtr(t, spec.Name, "openWorldHint", tool.Annotations.OpenWorldHint, expectOpenWorld)
 	}
 }
 
@@ -317,8 +381,26 @@ func TestMCPServerListsAllV2Tools(t *testing.T) {
 	initReq := mcp.InitializeRequest{}
 	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
 	initReq.Params.ClientInfo = mcp.Implementation{Name: "test-client", Version: "1.0.0"}
-	if _, err := c.Initialize(context.Background(), initReq); err != nil {
+	initResult, err := c.Initialize(context.Background(), initReq)
+	if err != nil {
 		t.Fatalf("initialize in-process client: %v", err)
+	}
+	if initResult.ServerInfo.Title != "CoreClaw MCP Server" {
+		t.Fatalf("expected server title annotation, got %q", initResult.ServerInfo.Title)
+	}
+	if initResult.ServerInfo.WebsiteURL != "https://mcp.coreclaw.com/mcp" {
+		t.Fatalf("expected hosted MCP endpoint website URL, got %q", initResult.ServerInfo.WebsiteURL)
+	}
+	for _, want := range []string{
+		"CoreClaw",
+		"get_worker_input_schema",
+		"run_worker",
+		"中文",
+		"不要调用",
+	} {
+		if !strings.Contains(initResult.Instructions, want) {
+			t.Fatalf("initialize instructions must contain %q, got:\n%s", want, initResult.Instructions)
+		}
 	}
 
 	tools, err := c.ListTools(context.Background(), mcp.ListToolsRequest{})
@@ -330,16 +412,47 @@ func TestMCPServerListsAllV2Tools(t *testing.T) {
 	}
 
 	found := map[string]bool{}
-	for _, tool := range tools.Tools {
+	for i, tool := range tools.Tools {
 		found[tool.Name] = true
 		if tool.Description == "" {
 			t.Fatalf("tool %s missing description", tool.Name)
 		}
+		if tool.Name != v2ToolSpecs()[i].Name {
+			t.Fatalf("MCP tools/list order mismatch at %d: expected %s, got %s", i, v2ToolSpecs()[i].Name, tool.Name)
+		}
+		if tool.Annotations.Title == "" {
+			t.Fatalf("MCP tools/list tool %s missing title annotation", tool.Name)
+		}
+		assertBoolPtr(t, tool.Name, "readOnlyHint", tool.Annotations.ReadOnlyHint, v2ToolSpecs()[i].Method == http.MethodGet)
 	}
 	for _, name := range []string{"list_store_workers", "run_worker", "get_worker_input_schema", "list_worker_last_run_results"} {
 		if !found[name] {
 			t.Fatalf("expected MCP tool %s in tools/list response", name)
 		}
+	}
+}
+
+func TestDocumentationTreatsHostedEndpointAsFirstClassEntry(t *testing.T) {
+	readme := mustReadUTF8(t, "README.md")
+	assertContains(t, readme, "## Hosted Endpoint")
+	assertContains(t, readme, "https://mcp.coreclaw.com/mcp")
+	assertBefore(t, readme, "## Hosted Endpoint", "## Build And Test")
+	if strings.Contains(readme, "https://your-server.example.com/mcp") {
+		t.Fatalf("README.md should use the real hosted endpoint, not a placeholder remote URL")
+	}
+
+	readmeZH := mustReadUTF8(t, "README.zh-CN.md")
+	assertContains(t, readmeZH, "## 托管入口")
+	assertContains(t, readmeZH, "https://mcp.coreclaw.com/mcp")
+	assertBefore(t, readmeZH, "## 托管入口", "## 构建和测试")
+	if strings.Contains(readmeZH, "https://your-server.example.com/mcp") {
+		t.Fatalf("README.zh-CN.md should use the real hosted endpoint, not a placeholder remote URL")
+	}
+
+	exampleConfig := mustReadUTF8(t, "codex-mcp.example.json")
+	assertContains(t, exampleConfig, "https://mcp.coreclaw.com/mcp")
+	if strings.Contains(exampleConfig, "https://your-server.example.com/mcp") {
+		t.Fatalf("codex-mcp.example.json should make the hosted endpoint the first-class remote target")
 	}
 }
 
@@ -352,4 +465,45 @@ func mustV2ToolSpec(t *testing.T, name string) v2ToolSpec {
 	}
 	t.Fatalf("missing v2 tool spec %q", name)
 	return v2ToolSpec{}
+}
+
+func assertBoolPtr(t *testing.T, toolName, field string, got *bool, want bool) {
+	t.Helper()
+	if got == nil {
+		t.Fatalf("tool %s annotation %s must be explicitly set", toolName, field)
+	}
+	if *got != want {
+		t.Fatalf("tool %s annotation %s: expected %t, got %t", toolName, field, want, *got)
+	}
+}
+
+func mustReadUTF8(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
+}
+
+func assertContains(t *testing.T, haystack, needle string) {
+	t.Helper()
+	if !strings.Contains(haystack, needle) {
+		t.Fatalf("expected content to contain %q", needle)
+	}
+}
+
+func assertBefore(t *testing.T, haystack, earlier, later string) {
+	t.Helper()
+	earlierIndex := strings.Index(haystack, earlier)
+	laterIndex := strings.Index(haystack, later)
+	if earlierIndex < 0 {
+		t.Fatalf("expected content to contain %q", earlier)
+	}
+	if laterIndex < 0 {
+		t.Fatalf("expected content to contain %q", later)
+	}
+	if earlierIndex > laterIndex {
+		t.Fatalf("expected %q before %q", earlier, later)
+	}
 }

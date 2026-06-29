@@ -52,11 +52,43 @@ func (s v2ToolSpec) Tool() mcp.Tool {
 	opts := []mcp.ToolOption{
 		mcp.WithDescription(s.Description),
 		mcp.WithSchemaAdditionalProperties(false),
+		mcp.WithTitleAnnotation(s.titleAnnotation()),
+		mcp.WithReadOnlyHintAnnotation(s.readOnlyHint()),
+		mcp.WithDestructiveHintAnnotation(s.destructiveHint()),
+		mcp.WithIdempotentHintAnnotation(s.idempotentHint()),
+		mcp.WithOpenWorldHintAnnotation(s.openWorldHint()),
 	}
 	for _, p := range s.Params {
 		opts = append(opts, p.toolOption())
 	}
 	return mcp.NewTool(s.Name, opts...)
+}
+
+func (s v2ToolSpec) titleAnnotation() string {
+	parts := strings.Split(s.Name, "_")
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(part[:1]) + part[1:]
+	}
+	return strings.Join(parts, " ")
+}
+
+func (s v2ToolSpec) readOnlyHint() bool {
+	return s.Method == http.MethodGet
+}
+
+func (s v2ToolSpec) destructiveHint() bool {
+	return s.Method == http.MethodPost
+}
+
+func (s v2ToolSpec) idempotentHint() bool {
+	return s.Method == http.MethodGet || strings.Contains(s.Name, "abort")
+}
+
+func (s v2ToolSpec) openWorldHint() bool {
+	return strings.HasPrefix(s.Name, "run_") || strings.HasPrefix(s.Name, "rerun_")
 }
 
 func (s v2ToolSpec) Handler(client *CoreClawClient) server.ToolHandlerFunc {
@@ -435,7 +467,7 @@ func runBodyParams() []v2ParamSpec {
 }
 
 func v2ToolSpecs() []v2ToolSpec {
-	return []v2ToolSpec{
+	return orderV2ToolSpecs([]v2ToolSpec{
 		{Name: "list_proxy_regions", Method: http.MethodGet, Path: "/api/v2/proxy/region", Description: publicDescription("List CoreClaw proxy regions in English or Chinese.", "Use when the user needs proxy country or region codes before running a worker, such as US, JP, DE, or Chinese localized names.", "JSON with a list of proxy regions and region codes.", "Call before run_worker when the worker input schema asks for proxy_region."), Params: []v2ParamSpec{{Name: "language", Location: v2QueryParam, Type: v2StringParam, Description: "Region display language. Example: \"en\" or \"zh\". (default: en)", Default: "en"}}},
 		{Name: "list_store_workers", Method: http.MethodGet, Path: "/api/v2/store", Description: publicDescription("Search the public CoreClaw worker marketplace for ready-to-run workers.", "Use when the user wants to find, discover, browse, or search CoreClaw scrapers/workers by keyword or site name.", "JSON with matching store workers, including slug, path, title, username, and description.", "Usually first step. Follow with get_worker_input_schema or get_worker before run_worker."), Params: []v2ParamSpec{offsetParam(), limitParam(), keywordParam()}},
 		{Name: "get_account_info", Method: http.MethodGet, Path: "/api/v2/users/account", Auth: true, Description: publicDescription("Get the current user's CoreClaw account balance and traffic quota.", "Use when the user asks for balance, remaining traffic, quota, billing state, or whether they can run jobs.", "JSON with balance, traffic, and traffic_expiration_at.", "Terminal call or preflight before run_worker.")},
@@ -464,5 +496,60 @@ func v2ToolSpecs() []v2ToolSpec {
 		{Name: "get_worker_last_run_log", Method: http.MethodGet, Path: "/api/v2/workers/{workerId}/runs/last/log", Auth: true, Description: publicDescription("Get logs for the most recent run of a specific CoreClaw worker.", "Use when debugging the latest run for a specific worker.", "JSON with log data.", "Call after get_worker_last_run when status or output needs explanation."), Params: []v2ParamSpec{workerIDParam()}},
 		{Name: "rerun_worker_last_run", Method: http.MethodPost, Path: "/api/v2/workers/{workerId}/runs/last/rerun", Auth: true, Description: publicDescription("Rerun the most recent run for a specific CoreClaw worker.", "Use when the user asks to retry or repeat the latest run for a known worker.", "JSON with a new run_slug or synchronous result fields.", "Follow with get_worker_last_run or list_worker_last_run_results."), Params: append([]v2ParamSpec{workerIDParam()}, runBodyParams()...)},
 		{Name: "list_worker_last_run_results", Method: http.MethodGet, Path: "/api/v2/workers/{workerId}/runs/last/result", Auth: true, Description: publicDescription("List paginated results from the most recent run of a specific CoreClaw worker.", "Use when the user wants latest output rows for a known worker.", "JSON with result rows and pagination metadata.", "Call after get_worker_last_run shows status succeeded; use export_worker_last_run_results for large output."), Params: []v2ParamSpec{workerIDParam(), offsetParam(), limitParam()}},
+	})
+}
+
+func orderV2ToolSpecs(specs []v2ToolSpec) []v2ToolSpec {
+	byName := make(map[string]v2ToolSpec, len(specs))
+	for _, spec := range specs {
+		byName[spec.Name] = spec
+	}
+
+	order := v2ToolWorkflowOrder()
+	ordered := make([]v2ToolSpec, 0, len(order))
+	for _, name := range order {
+		spec, ok := byName[name]
+		if !ok {
+			panic("missing v2 tool spec in workflow order: " + name)
+		}
+		ordered = append(ordered, spec)
+		delete(byName, name)
+	}
+	for name := range byName {
+		panic("v2 tool spec missing from workflow order: " + name)
+	}
+	return ordered
+}
+
+func v2ToolWorkflowOrder() []string {
+	return []string{
+		"list_proxy_regions",
+		"list_store_workers",
+		"list_workers",
+		"get_worker",
+		"get_worker_input_schema",
+		"list_worker_tasks",
+		"get_account_info",
+		"run_worker",
+		"run_worker_task",
+		"list_worker_runs",
+		"get_last_worker_run",
+		"get_worker_run",
+		"get_worker_last_run",
+		"list_last_worker_run_results",
+		"export_last_worker_run_results",
+		"get_last_worker_run_log",
+		"list_worker_run_results",
+		"export_worker_run_results",
+		"get_worker_run_log",
+		"list_worker_last_run_results",
+		"export_worker_last_run_results",
+		"get_worker_last_run_log",
+		"rerun_last_worker_run",
+		"rerun_worker_run",
+		"rerun_worker_last_run",
+		"abort_last_worker_run",
+		"abort_worker_run",
+		"abort_worker_last_run",
 	}
 }
