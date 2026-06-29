@@ -102,7 +102,11 @@ func (s v2ToolSpec) Handler(client *CoreClawClient) server.ToolHandlerFunc {
 		case http.MethodPost:
 			var bodyArg any
 			if hasBody {
-				bodyArg = body
+				preparedBody, err := s.prepareBody(body)
+				if err != nil {
+					return mcp.NewToolResultError(err.Error()), nil
+				}
+				bodyArg = preparedBody
 			} else {
 				bodyArg = map[string]any{}
 			}
@@ -114,6 +118,40 @@ func (s v2ToolSpec) Handler(client *CoreClawClient) server.ToolHandlerFunc {
 			return mcp.NewToolResultError(err.Error()), nil
 		}
 		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+func (s v2ToolSpec) prepareBody(body map[string]any) (map[string]any, error) {
+	if s.Name != "run_worker" {
+		return body, nil
+	}
+
+	input, hasInput := body["input"]
+	rawInput, hasRawInput := body["raw_input_json"]
+	if hasInput && hasRawInput {
+		return nil, fmt.Errorf("use either input_json or raw_input_json, not both")
+	}
+	if hasRawInput {
+		body["input"] = rawInput
+		delete(body, "raw_input_json")
+		return body, nil
+	}
+	if hasInput {
+		body["input"] = wrapWorkerCustomInput(input)
+	}
+	return body, nil
+}
+
+func wrapWorkerCustomInput(input any) any {
+	if inputMap, ok := input.(map[string]any); ok {
+		if _, hasParameters := inputMap["parameters"]; hasParameters {
+			return input
+		}
+	}
+	return map[string]any{
+		"parameters": map[string]any{
+			"custom": input,
+		},
 	}
 }
 
@@ -419,7 +457,7 @@ func v2ToolSpecs() []v2ToolSpec {
 		{Name: "list_workers", Method: http.MethodGet, Path: "/api/v2/workers", Auth: true, Description: publicDescription("List CoreClaw workers owned by the current user.", "Use when the user wants their private/current-user workers, not the public marketplace.", "JSON with worker slug, path, title, username, and description.", "Follow with get_worker, get_worker_input_schema, run_worker, or worker-specific last-run tools."), Params: []v2ParamSpec{offsetParam(), limitParam(), keywordParam()}},
 		{Name: "get_worker", Method: http.MethodGet, Path: "/api/v2/workers/{workerId}", Auth: true, Description: publicDescription("Get detail for a CoreClaw worker.", "Use before running a worker to inspect version, README, and parameters.", "JSON with worker name, username, version, readme, and parameters.", "Follow with get_worker_input_schema and then run_worker."), Params: []v2ParamSpec{workerIDParam()}},
 		{Name: "get_worker_input_schema", Method: http.MethodGet, Path: "/api/v2/workers/{workerId}/input-schema", Description: publicDescription("Get the public input JSON schema for a CoreClaw worker.", "Use when the user wants to know required input fields or before composing run_worker input_json.", "JSON with input_schema.", "Call before run_worker so input_json matches the worker schema."), Params: []v2ParamSpec{workerIDParam()}},
-		{Name: "run_worker", Method: http.MethodPost, Path: "/api/v2/workers/{workerId}/runs", Auth: true, Description: publicDescription("Run a CoreClaw worker with an ad-hoc JSON input payload.", "Use when the user wants to start, execute, scrape, crawl, or run a worker with specific input.", "JSON with run_slug for async runs or synchronous result fields for sync runs.", "Call get_worker_input_schema first, then run_worker, then get_worker_run or get_last_worker_run, then results/export/log tools."), Params: append([]v2ParamSpec{workerIDParam(), {Name: "version", Location: v2BodyParam, Type: v2StringParam, Description: "Worker script version. Example: \"latest\" or \"1.0.1\". Obtain from get_worker; default is backend latest. (optional)"}, {Name: "input_json", Location: v2BodyParam, Type: v2JSONParam, Description: "Worker input payload as a JSON object string. Example: {\"keyword\":\"coffee\",\"limit\":10}. Schema comes from get_worker_input_schema. (optional)"}}, runBodyParams()...)},
+		{Name: "run_worker", Method: http.MethodPost, Path: "/api/v2/workers/{workerId}/runs", Auth: true, Description: publicDescription("Run a CoreClaw worker with an ad-hoc JSON input payload.", "Use when the user wants to start, execute, scrape, crawl, or run a worker with specific input.", "JSON with run_slug for async runs or synchronous result fields for sync runs.", "Call get_worker_input_schema first, then run_worker, then get_worker_run or get_last_worker_run, then results/export/log tools."), Params: append([]v2ParamSpec{workerIDParam(), {Name: "version", Location: v2BodyParam, Type: v2StringParam, Description: "Worker script version. Example: \"latest\" or \"1.0.1\". Obtain from get_worker; default is backend latest. (optional)"}, {Name: "input_json", Location: v2BodyParam, Type: v2JSONParam, Description: "Worker business input payload as a JSON object string. Example: {\"keyword\":\"coffee\",\"limit\":10}. The MCP server sends it as input.parameters.custom, matching CoreClaw saved task payloads. Schema comes from get_worker_input_schema. (optional)"}, {Name: "raw_input_json", Location: v2BodyParam, Type: v2JSONParam, Description: "Advanced escape hatch: full CoreClaw input object to send as input without wrapping. Example: {\"parameters\":{\"system\":{\"proxy_region\":\"US\"},\"custom\":{\"keyword\":\"coffee\"}}}. Do not combine with input_json. (optional)"}}, runBodyParams()...)},
 		{Name: "get_worker_last_run", Method: http.MethodGet, Path: "/api/v2/workers/{workerId}/runs/last", Auth: true, Description: publicDescription("Get the most recent run for a specific CoreClaw worker.", "Use when the user asks for the last run of a specific worker.", "JSON with last run details for that worker.", "Follow with worker-specific last result/export/log/rerun/abort tools."), Params: []v2ParamSpec{workerIDParam()}},
 		{Name: "abort_worker_last_run", Method: http.MethodPost, Path: "/api/v2/workers/{workerId}/runs/last/abort", Auth: true, Description: publicDescription("Abort the most recent run for a specific CoreClaw worker.", "Use when the user wants to cancel the latest active run of a known worker.", "JSON success envelope data, often null.", "Call after get_worker_last_run confirms the run is active."), Params: append([]v2ParamSpec{workerIDParam()}, runBodyParams()...)},
 		{Name: "export_worker_last_run_results", Method: http.MethodGet, Path: "/api/v2/workers/{workerId}/runs/last/export", Auth: true, Description: publicDescription("Export results from the most recent run of a specific CoreClaw worker.", "Use when the user asks to download/export the latest output for a known worker.", "JSON with a temporary download_url.", "Call after get_worker_last_run shows status succeeded."), Params: []v2ParamSpec{workerIDParam(), formatParam(), filterKeysParam()}},

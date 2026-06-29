@@ -189,8 +189,83 @@ func TestV2ToolUsesPOSTJSONBody(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected input object, got %#v", got.Body["input"])
 	}
-	if input["keyword"] != "coffee" || input["limit"] != float64(10) {
-		t.Fatalf("unexpected input object: %#v", input)
+	parameters, ok := input["parameters"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected input.parameters object, got %#v", input["parameters"])
+	}
+	custom, ok := parameters["custom"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected input.parameters.custom object, got %#v", parameters["custom"])
+	}
+	if custom["keyword"] != "coffee" || custom["limit"] != float64(10) {
+		t.Fatalf("unexpected input.parameters.custom object: %#v", custom)
+	}
+}
+
+func TestV2RunWorkerAcceptsRawInputJSON(t *testing.T) {
+	var got map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatalf("unmarshal body %q: %v", string(body), err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"run_slug":"run_123"}}`))
+	}))
+	defer upstream.Close()
+
+	client := NewCoreClawClient("fallback-token", upstream.URL)
+	spec := mustV2ToolSpec(t, "run_worker")
+	result, err := spec.Handler(client)(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Arguments: map[string]any{
+				"worker_id":      "demo-worker",
+				"raw_input_json": `{"parameters":{"system":{"proxy_region":"US"},"custom":{"keyword":"coffee"}}}`,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("expected success result, got %+v", result)
+	}
+
+	input, ok := got["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected input object, got %#v", got["input"])
+	}
+	parameters := input["parameters"].(map[string]any)
+	system := parameters["system"].(map[string]any)
+	custom := parameters["custom"].(map[string]any)
+	if system["proxy_region"] != "US" || custom["keyword"] != "coffee" {
+		t.Fatalf("unexpected raw input object: %#v", input)
+	}
+	if _, ok := got["raw_input_json"]; ok {
+		t.Fatalf("raw_input_json must not be forwarded upstream: %#v", got)
+	}
+}
+
+func TestV2RunWorkerRejectsAmbiguousInputJSON(t *testing.T) {
+	client := NewCoreClawClient("token", "http://127.0.0.1:1")
+	spec := mustV2ToolSpec(t, "run_worker")
+	result, err := spec.Handler(client)(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Arguments: map[string]any{
+				"worker_id":      "demo-worker",
+				"input_json":     `{"keyword":"coffee"}`,
+				"raw_input_json": `{"parameters":{"custom":{"keyword":"coffee"}}}`,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handler should return tool error, not Go error: %v", err)
+	}
+	if result == nil || !result.IsError {
+		t.Fatalf("expected tool error for ambiguous input_json/raw_input_json, got %+v", result)
 	}
 }
 

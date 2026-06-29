@@ -26,6 +26,15 @@ $env:CORECLAW_API_KEY="your-coreclaw-token"
 .\scripts\verify-real-api.ps1
 ```
 
+Real MCP-triggered end-to-end run verification:
+
+```powershell
+$env:CORECLAW_API_KEY="your-coreclaw-token"
+.\scripts\verify-e2e-run.ps1
+```
+
+The E2E script starts the local Streamable HTTP MCP server, calls `run_worker_task` through MCP `tools/call`, polls `get_worker_run`, then verifies logs, result rows, and JSON export.
+
 ## Run
 
 stdio:
@@ -120,7 +129,14 @@ curl -X POST http://localhost:3000/mcp/get_account_info \
   -H "Content-Type: application/json" \
   -H "api-key: your-coreclaw-token" \
   -d '{}'
+
+curl -X POST http://localhost:3000/mcp/run_worker \
+  -H "Content-Type: application/json" \
+  -H "api-key: your-coreclaw-token" \
+  -d '{"worker_id":"YOUR_WORKER_ID","version":"v1.0.1","input_json":"{\"keyword\":\"coffee\",\"limit\":10}","is_async":true}'
 ```
+
+For `run_worker`, pass business fields from `get_worker_input_schema` as `input_json`. The MCP server wraps that object as `input.parameters.custom` for CoreClaw. Advanced callers can pass a complete CoreClaw `input` object with `raw_input_json` instead.
 
 ## GitHub Deployment
 

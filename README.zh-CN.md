@@ -26,6 +26,15 @@ $env:CORECLAW_API_KEY="your-coreclaw-token"
 .\scripts\verify-real-api.ps1
 ```
 
+真实 MCP 触发的端到端运行验收：
+
+```powershell
+$env:CORECLAW_API_KEY="your-coreclaw-token"
+.\scripts\verify-e2e-run.ps1
+```
+
+该脚本会启动本地 Streamable HTTP MCP 服务，通过 MCP `tools/call` 调用 `run_worker_task`，轮询 `get_worker_run`，并继续验证日志、结果行和 JSON 导出链接。
+
 ## 运行
 
 stdio：
@@ -98,7 +107,14 @@ curl -X POST http://localhost:3000/mcp/get_account_info \
   -H "Content-Type: application/json" \
   -H "api-key: your-coreclaw-token" \
   -d '{}'
+
+curl -X POST http://localhost:3000/mcp/run_worker \
+  -H "Content-Type: application/json" \
+  -H "api-key: your-coreclaw-token" \
+  -d '{"worker_id":"YOUR_WORKER_ID","version":"v1.0.1","input_json":"{\"keyword\":\"coffee\",\"limit\":10}","is_async":true}'
 ```
+
+`run_worker` 的 `input_json` 填从 `get_worker_input_schema` 看到的业务字段即可；MCP 服务会自动包装为 CoreClaw 实际使用的 `input.parameters.custom`。如果高级调用方要完全控制 CoreClaw 的 `input` 对象，可以改用 `raw_input_json`。
 
 ## GitHub 自动化部署
 
