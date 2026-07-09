@@ -14,7 +14,7 @@ func NewCoreClawMCPServer(client *CoreClawClient) *server.MCPServer {
 		"coreclaw-mcp-server",
 		version,
 		server.WithTitle("CoreClaw MCP Server"),
-		server.WithDescription("MCP server for CoreClaw OpenAPI v2 worker discovery, execution, run monitoring, result export, and logs."),
+		server.WithDescription("MCP server for CoreClaw OpenAPI v2 worker discovery, execution, task CRUD, run monitoring, result export, and logs."),
 		server.WithWebsiteURL("https://mcp.coreclaw.com/mcp"),
 		server.WithInstructions(serverInstructions()),
 		server.WithToolFilter(orderToolsForCoreClawWorkflow),
@@ -57,7 +57,7 @@ func serverInstructions() string {
 
 Recommended workflow:
 1. Discover workers with list_store_workers for public marketplace workers or list_workers for the authenticated user's workers. Use list_proxy_regions when a worker input asks for a proxy region.
-2. Inspect get_worker and get_worker_input_schema before run_worker. For saved presets, use list_worker_tasks before run_worker_task.
+2. Inspect get_worker and get_worker_input_schema before run_worker. For saved presets, use list_worker_tasks, create_worker_task, get_worker_task, update_worker_task, or delete_worker_task before run_worker_task.
 3. Start work with run_worker or run_worker_task. Prefer async runs unless the user explicitly needs a small synchronous result.
 4. Poll or inspect status with get_worker_run, get_last_worker_run, or get_worker_last_run.
 5. Read output with list_worker_run_results, list_last_worker_run_results, or list_worker_last_run_results. Use export_* tools for CSV/JSON download links and get_*_log tools for debugging.

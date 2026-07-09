@@ -30,7 +30,7 @@ https://mcp.coreclaw.com/mcp
 ## 范围
 
 - API 事实来源：`exported-api-docs/openapi.json` 和 `exported-api-docs/endpoints.csv`
-- 暴露为 MCP 工具的公开 v2 operation：28 个
+- 暴露为 MCP 工具的公开 v2 operation：34 个
 - 排除的内部接口：`POST /api/v2/workers/{workerId}/versions`、`PUT /api/v2/workers/{workerId}/versions/{version}`、`GET /api/v2/workers/{workerId}/internal`
 - 传输方式：stdio 和 Streamable HTTP
 - REST 兼容入口：`POST /mcp/<tool_name>`
@@ -83,12 +83,12 @@ HTTP 服务提供：
 
 ## MCP 工具
 
-本服务公开 28 个 v2 工具，名称与公开 endpoint 一一对应，并按模型实际使用链路排序：发现和预检、执行、查询运行、读取结果/日志/导出、最后才是重跑或停止。
+本服务公开 34 个 v2 工具，名称与公开 endpoint 一一对应，并按模型实际使用链路排序：发现和预检、执行、查询运行、读取结果/日志/导出、最后才是重跑或停止。
 
 1. `list_store_workers`
 2. `list_workers`
 3. `get_worker` 或 `get_worker_input_schema`
-4. `list_worker_tasks`
+4. `list_worker_tasks`，需要保存预设时用 `create_worker_task`，查看/修改/删除用 `get_worker_task`、`get_worker_task_input`、`update_worker_task`、`update_worker_task_input`、`delete_worker_task`
 5. `run_worker` 或 `run_worker_task`
 6. `get_worker_run`、`get_last_worker_run` 或 `get_worker_last_run`
 7. `list_worker_run_results` 或 `export_worker_run_results`
@@ -161,7 +161,7 @@ curl -X POST http://localhost:3000/mcp/run_worker \
   -d '{"worker_id":"YOUR_WORKER_ID","version":"v1.0.1","input_json":"{\"keyword\":\"coffee\",\"limit\":10}","is_async":true}'
 ```
 
-`run_worker` 的 `input_json` 填从 `get_worker_input_schema` 看到的业务字段即可；MCP 服务会自动包装为 CoreClaw 实际使用的 `input.parameters.custom`。如果高级调用方要完全控制 CoreClaw 的 `input` 对象，可以改用 `raw_input_json`。
+`run_worker`、`create_worker_task`、`update_worker_task_input` 的 `input_json` 填从 `get_worker_input_schema` 看到的业务字段即可；MCP 服务会自动包装为 CoreClaw 实际使用的 `input.parameters.custom`。如果高级调用方要完全控制 CoreClaw 的 `input` 对象，可以改用 `raw_input_json`。
 
 ## GitHub 自动化部署
 

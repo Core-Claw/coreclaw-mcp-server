@@ -17,8 +17,8 @@ import (
 
 func TestV2PublicToolRegistryMatchesOpenAPIScope(t *testing.T) {
 	specs := v2ToolSpecs()
-	if len(specs) != 28 {
-		t.Fatalf("expected 28 public v2 tools, got %d", len(specs))
+	if len(specs) != 34 {
+		t.Fatalf("expected 34 public v2 tools, got %d", len(specs))
 	}
 
 	seenNames := map[string]bool{}
@@ -82,7 +82,12 @@ func TestV2ToolWorkflowOrder(t *testing.T) {
 		"get_worker",
 		"get_worker_input_schema",
 		"list_worker_tasks",
+		"get_worker_task",
+		"get_worker_task_input",
 		"get_account_info",
+		"create_worker_task",
+		"update_worker_task",
+		"update_worker_task_input",
 		"run_worker",
 		"run_worker_task",
 		"list_worker_runs",
@@ -104,6 +109,7 @@ func TestV2ToolWorkflowOrder(t *testing.T) {
 		"abort_last_worker_run",
 		"abort_worker_run",
 		"abort_worker_last_run",
+		"delete_worker_task",
 	}
 
 	specs := v2ToolSpecs()
@@ -125,8 +131,8 @@ func TestV2ToolsExposeExplicitMCPAnnotations(t *testing.T) {
 		}
 
 		expectReadOnly := spec.Method == http.MethodGet
-		expectDestructive := spec.Method == http.MethodPost
-		expectIdempotent := spec.Method == http.MethodGet || strings.Contains(spec.Name, "abort")
+		expectDestructive := spec.Method == http.MethodPost || spec.Method == http.MethodDelete
+		expectIdempotent := spec.Method == http.MethodGet || spec.Method == http.MethodPut || spec.Method == http.MethodDelete || strings.Contains(spec.Name, "abort")
 		expectOpenWorld := strings.HasPrefix(spec.Name, "run_") || strings.HasPrefix(spec.Name, "rerun_")
 
 		assertBoolPtr(t, spec.Name, "readOnlyHint", tool.Annotations.ReadOnlyHint, expectReadOnly)
@@ -333,6 +339,114 @@ func TestV2RunWorkerRejectsAmbiguousInputJSON(t *testing.T) {
 	}
 }
 
+func TestV2CreateWorkerTaskWrapsInput(t *testing.T) {
+	var got map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v2/worker-tasks" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatalf("unmarshal body %q: %v", string(body), err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"slug":"task_1"}}`))
+	}))
+	defer upstream.Close()
+
+	client := NewCoreClawClient("fallback-token", upstream.URL)
+	spec := mustV2ToolSpec(t, "create_worker_task")
+	result, err := spec.Handler(client)(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Arguments: map[string]any{
+				"worker_id":  "coreclaw~google-search-scraper",
+				"title":      "Daily Search",
+				"input_json": `{"keyword":"coffee","max_pages":"1"}`,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("expected success result, got %+v", result)
+	}
+
+	input, ok := got["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected input object, got %#v", got["input"])
+	}
+	parameters, ok := input["parameters"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected input.parameters object, got %#v", input["parameters"])
+	}
+	custom, ok := parameters["custom"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected input.parameters.custom object, got %#v", parameters["custom"])
+	}
+	if custom["keyword"] != "coffee" || custom["max_pages"] != "1" {
+		t.Fatalf("unexpected input.parameters.custom object: %#v", custom)
+	}
+	if _, ok := got["input_json"]; ok {
+		t.Fatalf("input_json must not be forwarded upstream: %#v", got)
+	}
+}
+
+func TestV2UpdateWorkerTaskInputWrapsInput(t *testing.T) {
+	var got map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/api/v2/worker-tasks/task_1/input" {
+			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if err := json.Unmarshal(body, &got); err != nil {
+			t.Fatalf("unmarshal body %q: %v", string(body), err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"message":"success"}`))
+	}))
+	defer upstream.Close()
+
+	client := NewCoreClawClient("fallback-token", upstream.URL)
+	spec := mustV2ToolSpec(t, "update_worker_task_input")
+	result, err := spec.Handler(client)(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Arguments: map[string]any{
+				"worker_task_id": "task_1",
+				"input_json":     `{"keyword":"coffee","max_pages":"1"}`,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("expected success result, got %+v", result)
+	}
+
+	input, ok := got["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected input object, got %#v", got["input"])
+	}
+	parameters, ok := input["parameters"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected input.parameters object, got %#v", input["parameters"])
+	}
+	custom, ok := parameters["custom"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected input.parameters.custom object, got %#v", parameters["custom"])
+	}
+	if custom["keyword"] != "coffee" {
+		t.Fatalf("unexpected input.parameters.custom object: %#v", custom)
+	}
+}
+
 func TestV2ToolRejectsInvalidInputJSON(t *testing.T) {
 	client := NewCoreClawClient("token", "http://127.0.0.1:1")
 	spec := mustV2ToolSpec(t, "run_worker")
@@ -354,8 +468,8 @@ func TestV2ToolRejectsInvalidInputJSON(t *testing.T) {
 
 func TestRESTHandlerIncludesAllV2Tools(t *testing.T) {
 	tools := restToolHandlers(NewCoreClawClient("token", "http://127.0.0.1:1"))
-	if len(tools) != 28 {
-		t.Fatalf("expected 28 REST tool handlers, got %d", len(tools))
+	if len(tools) != 34 {
+		t.Fatalf("expected 34 REST tool handlers, got %d", len(tools))
 	}
 	if _, ok := tools["get_worker_internal"]; ok {
 		t.Fatalf("internal endpoint must not have a REST handler")
@@ -407,8 +521,8 @@ func TestMCPServerListsAllV2Tools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
-	if len(tools.Tools) != 28 {
-		t.Fatalf("expected 28 listed MCP tools, got %d", len(tools.Tools))
+	if len(tools.Tools) != 34 {
+		t.Fatalf("expected 34 listed MCP tools, got %d", len(tools.Tools))
 	}
 
 	found := map[string]bool{}

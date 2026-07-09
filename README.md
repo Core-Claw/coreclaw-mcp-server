@@ -30,7 +30,7 @@ The server accepts `api-key`, `X-API-Key`, or `Authorization: Bearer <token>` fr
 ## Scope
 
 - API source of truth: `exported-api-docs/openapi.json` and `exported-api-docs/endpoints.csv`
-- Public v2 operations exposed as MCP tools: 28
+- Public v2 operations exposed as MCP tools: 34
 - Excluded internal operations: `POST /api/v2/workers/{workerId}/versions`, `PUT /api/v2/workers/{workerId}/versions/{version}`, `GET /api/v2/workers/{workerId}/internal`
 - Transports: stdio and Streamable HTTP
 - REST compatibility shim: `POST /mcp/<tool_name>`
@@ -93,7 +93,13 @@ Tools are registered in the same order a model should normally use them: discove
 | `get_worker` | `GET /api/v2/workers/{workerId}` |
 | `get_worker_input_schema` | `GET /api/v2/workers/{workerId}/input-schema` |
 | `list_worker_tasks` | `GET /api/v2/worker-tasks` |
+| `get_worker_task` | `GET /api/v2/worker-tasks/{workerTaskId}` |
+| `get_worker_task_input` | `GET /api/v2/worker-tasks/{workerTaskId}/input` |
 | `get_account_info` | `GET /api/v2/users/account` |
+| `create_worker_task` | `POST /api/v2/worker-tasks` |
+| `update_worker_task` | `PUT /api/v2/worker-tasks/{workerTaskId}` |
+| `update_worker_task_input` | `PUT /api/v2/worker-tasks/{workerTaskId}/input` |
+| `delete_worker_task` | `DELETE /api/v2/worker-tasks/{workerTaskId}` |
 | `run_worker` | `POST /api/v2/workers/{workerId}/runs` |
 | `run_worker_task` | `POST /api/v2/worker-tasks/{workerTaskId}/runs` |
 | `list_worker_runs` | `GET /api/v2/worker-runs` |
@@ -182,7 +188,7 @@ curl -X POST http://localhost:3000/mcp/run_worker \
   -d '{"worker_id":"YOUR_WORKER_ID","version":"v1.0.1","input_json":"{\"keyword\":\"coffee\",\"limit\":10}","is_async":true}'
 ```
 
-For `run_worker`, pass business fields from `get_worker_input_schema` as `input_json`. The MCP server wraps that object as `input.parameters.custom` for CoreClaw. Advanced callers can pass a complete CoreClaw `input` object with `raw_input_json` instead.
+For `run_worker`, `create_worker_task`, and `update_worker_task_input`, pass business fields from `get_worker_input_schema` as `input_json`. The MCP server wraps that object as `input.parameters.custom` for CoreClaw. Advanced callers can pass a complete CoreClaw `input` object with `raw_input_json` instead (run_worker only).
 
 ## GitHub Deployment
 

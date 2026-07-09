@@ -63,6 +63,16 @@ func (c *CoreClawClient) doPost(ctx context.Context, path string, body any) (jso
 	return c.doJSON(ctx, http.MethodPost, path, nil, body, true)
 }
 
+// doPut sends a PUT request to an authenticated CoreClaw API endpoint.
+func (c *CoreClawClient) doPut(ctx context.Context, path string, body any) (json.RawMessage, error) {
+	return c.doJSON(ctx, http.MethodPut, path, nil, body, true)
+}
+
+// doDelete sends a DELETE request to an authenticated CoreClaw API endpoint.
+func (c *CoreClawClient) doDelete(ctx context.Context, path string) (json.RawMessage, error) {
+	return c.doJSON(ctx, http.MethodDelete, path, nil, nil, true)
+}
+
 func (c *CoreClawClient) doJSON(ctx context.Context, method, path string, params url.Values, body any, authRequired bool) (json.RawMessage, error) {
 	u := c.baseURL + path
 	if len(params) > 0 {

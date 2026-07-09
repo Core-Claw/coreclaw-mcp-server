@@ -80,11 +80,11 @@ func (s v2ToolSpec) readOnlyHint() bool {
 }
 
 func (s v2ToolSpec) destructiveHint() bool {
-	return s.Method == http.MethodPost
+	return s.Method == http.MethodPost || s.Method == http.MethodDelete
 }
 
 func (s v2ToolSpec) idempotentHint() bool {
-	return s.Method == http.MethodGet || strings.Contains(s.Name, "abort")
+	return s.Method == http.MethodGet || s.Method == http.MethodPut || s.Method == http.MethodDelete || strings.Contains(s.Name, "abort")
 }
 
 func (s v2ToolSpec) openWorldHint() bool {
@@ -143,6 +143,20 @@ func (s v2ToolSpec) Handler(client *CoreClawClient) server.ToolHandlerFunc {
 				bodyArg = map[string]any{}
 			}
 			data, err = client.doPost(ctx, path, bodyArg)
+		case http.MethodPut:
+			var bodyArg any
+			if hasBody {
+				preparedBody, err := s.prepareBody(body)
+				if err != nil {
+					return mcp.NewToolResultError(err.Error()), nil
+				}
+				bodyArg = preparedBody
+			} else {
+				bodyArg = map[string]any{}
+			}
+			data, err = client.doPut(ctx, path, bodyArg)
+		case http.MethodDelete:
+			data, err = client.doDelete(ctx, path)
 		default:
 			return mcp.NewToolResultError("unsupported CoreClaw API method: " + s.Method), nil
 		}
@@ -154,7 +168,15 @@ func (s v2ToolSpec) Handler(client *CoreClawClient) server.ToolHandlerFunc {
 }
 
 func (s v2ToolSpec) prepareBody(body map[string]any) (map[string]any, error) {
-	if s.Name != "run_worker" {
+	// run_worker, create_worker_task, and update_worker_task_input all accept
+	// the caller's business fields as input_json and must send them upstream as
+	// input.parameters.custom to match CoreClaw's saved task payload contract.
+	// Sending input_json unwrapped makes the saved task un-runnable (backend
+	// rejects it with "Keyword is required" for required custom fields).
+	wrapsInput := s.Name == "run_worker" ||
+		s.Name == "create_worker_task" ||
+		s.Name == "update_worker_task_input"
+	if !wrapsInput {
 		return body, nil
 	}
 
@@ -466,14 +488,118 @@ func runBodyParams() []v2ParamSpec {
 	return []v2ParamSpec{callbackParam(), isAsyncParam(), bodyOffsetParam(), bodyLimitParam()}
 }
 
+// --- worker-task CRUD body params ---
+
+func taskTitleParam() v2ParamSpec {
+	return v2ParamSpec{
+		Name:        "title",
+		Location:    v2BodyParam,
+		Type:        v2StringParam,
+		Required:    true,
+		Description: "Task title. Example: \"Daily Amazon Price Check\".",
+	}
+}
+
+func taskDescriptionParam() v2ParamSpec {
+	return v2ParamSpec{
+		Name:        "description",
+		Location:    v2BodyParam,
+		Type:        v2StringParam,
+		Description: "Task description. (optional)",
+	}
+}
+
+func taskVersionParam() v2ParamSpec {
+	return v2ParamSpec{
+		Name:        "version",
+		Location:    v2BodyParam,
+		Type:        v2StringParam,
+		Description: "Worker version. Defaults to current worker version. Example: \"latest\" or \"1.0.1\". (optional)",
+	}
+}
+
+func taskWorkerIDBodyParam() v2ParamSpec {
+	return v2ParamSpec{
+		Name:        "worker_id",
+		Location:    v2BodyParam,
+		Type:        v2StringParam,
+		Required:    true,
+		Description: "Worker slug or owner path. Example: \"demo-worker\" or \"owner~demo-worker\". Obtain from list_store_workers or list_workers.",
+	}
+}
+
+func taskInputJSONBodyParam() v2ParamSpec {
+	return v2ParamSpec{
+		Name:        "input_json",
+		Location:    v2BodyParam,
+		Type:        v2JSONParam,
+		Required:    true,
+		Description: "Task input parameters as a JSON object string. Example: {\"keyword\":\"coffee\",\"limit\":10}. Schema comes from get_worker_input_schema.",
+	}
+}
+
+func taskScheduleTypeParam() v2ParamSpec {
+	return v2ParamSpec{
+		Name:        "schedule_type",
+		Location:    v2BodyParam,
+		Type:        v2NumberParam,
+		Description: "Schedule type: 1=daily, 2=weekly, 3=monthly. (optional)",
+	}
+}
+
+func taskScheduleTimeParam() v2ParamSpec {
+	return v2ParamSpec{
+		Name:        "schedule_time",
+		Location:    v2BodyParam,
+		Type:        v2StringParam,
+		Description: "Schedule time in HH:mm format. Example: \"09:00\". (optional)",
+	}
+}
+
+func taskScheduleWeekdayParam() v2ParamSpec {
+	return v2ParamSpec{
+		Name:        "schedule_weekday",
+		Location:    v2BodyParam,
+		Type:        v2NumberParam,
+		Description: "Day of week for weekly schedules: 0-6, 0=Sunday. (optional)",
+	}
+}
+
+func taskScheduleDayParam() v2ParamSpec {
+	return v2ParamSpec{
+		Name:        "schedule_day",
+		Location:    v2BodyParam,
+		Type:        v2NumberParam,
+		Description: "Day of month for monthly schedule. (optional)",
+	}
+}
+
+func taskScheduleOnceDateParam() v2ParamSpec {
+	return v2ParamSpec{
+		Name:        "schedule_once_date",
+		Location:    v2BodyParam,
+		Type:        v2StringParam,
+		Description: "Once schedule date in YYYY-MM-DD format. Example: \"2026-12-25\". (optional)",
+	}
+}
+
+func taskScheduleEnabledParam() v2ParamSpec {
+	return v2ParamSpec{
+		Name:        "schedule_enabled",
+		Location:    v2BodyParam,
+		Type:        v2NumberParam,
+		Description: "Schedule switch: 0 disabled, 1 enabled. (optional)",
+	}
+}
+
 func v2ToolSpecs() []v2ToolSpec {
 	return orderV2ToolSpecs([]v2ToolSpec{
 		{Name: "list_proxy_regions", Method: http.MethodGet, Path: "/api/v2/proxy/region", Description: publicDescription("List CoreClaw proxy regions in English or Chinese.", "Use when the user needs proxy country or region codes before running a worker, such as US, JP, DE, or Chinese localized names.", "JSON with a list of proxy regions and region codes.", "Call before run_worker when the worker input schema asks for proxy_region."), Params: []v2ParamSpec{{Name: "language", Location: v2QueryParam, Type: v2StringParam, Description: "Region display language. Example: \"en\" or \"zh\". (default: en)", Default: "en"}}},
 		{Name: "list_store_workers", Method: http.MethodGet, Path: "/api/v2/store", Description: publicDescription("Search the public CoreClaw worker marketplace for ready-to-run workers.", "Use when the user wants to find, discover, browse, or search CoreClaw scrapers/workers by keyword or site name.", "JSON with matching store workers, including slug, path, title, username, and description.", "Usually first step. Follow with get_worker_input_schema or get_worker before run_worker."), Params: []v2ParamSpec{offsetParam(), limitParam(), keywordParam()}},
-		{Name: "get_account_info", Method: http.MethodGet, Path: "/api/v2/users/account", Auth: true, Description: publicDescription("Get the current user's CoreClaw account balance and traffic quota.", "Use when the user asks for balance, remaining traffic, quota, billing state, or whether they can run jobs.", "JSON with balance, traffic, and traffic_expiration_at.", "Terminal call or preflight before run_worker.")},
+		{Name: "get_account_info", Method: http.MethodGet, Path: "/api/v2/users/account", Auth: true, Description: publicDescription("Get the current user's CoreClaw account balance and traffic quota.", "Use when the user asks for balance, remaining traffic, quota, billing state, or whether they can run jobs.", "JSON with balance and balance_expiration_at.", "Terminal call or preflight before run_worker.")},
 		{Name: "list_worker_runs", Method: http.MethodGet, Path: "/api/v2/worker-runs", Auth: true, Description: publicDescription("List the current user's CoreClaw worker runs.", "Use when the user wants run history, recent jobs, or to find a run_id by worker or status.", "JSON with count, list, offset/page data, run slug, worker info, status, usage, traffic, and timestamps.", "Follow with get_worker_run, list_worker_run_results, export_worker_run_results, rerun_worker_run, or abort_worker_run."), Params: []v2ParamSpec{offsetParam(), limitParam(), {Name: "worker_id", Location: v2QueryParam, Type: v2StringParam, Description: "Filter by worker slug or owner path. Example: \"demo-worker\" or \"owner~demo-worker\". (optional)"}, {Name: "status", Location: v2QueryParam, Type: v2StringParam, Description: "Filter by run status. Allowed: ready, running, succeeded, failed, aborting. (optional)", Enum: []string{"ready", "running", "succeeded", "failed", "aborting"}}}},
 		{Name: "get_last_worker_run", Method: http.MethodGet, Path: "/api/v2/worker-runs/last", Auth: true, Description: publicDescription("Get the current user's most recent CoreClaw worker run.", "Use when the user says last run, latest job, most recent scrape, or asks what just happened.", "JSON with the latest run's slug, status, worker, version, timestamps, usage, traffic, and result count.", "Follow with list_last_worker_run_results, export_last_worker_run_results, get_last_worker_run_log, rerun_last_worker_run, or abort_last_worker_run.")},
-		{Name: "abort_last_worker_run", Method: http.MethodPost, Path: "/api/v2/worker-runs/last/abort", Auth: true, Description: publicDescription("Abort the current user's most recent CoreClaw worker run.", "Use when the user wants to stop or cancel the last running job.", "JSON success envelope data, often null.", "Call after get_last_worker_run confirms the last run is still active."), Params: runBodyParams()},
+		{Name: "abort_last_worker_run", Method: http.MethodPost, Path: "/api/v2/worker-runs/last/abort", Auth: true, Description: publicDescription("Abort the current user's most recent CoreClaw worker run.", "Use when the user wants to stop or cancel the last running job.", "JSON success envelope data, often null.", "Call after get_last_worker_run confirms the last run is still active."), Params: []v2ParamSpec{}},
 		{Name: "export_last_worker_run_results", Method: http.MethodGet, Path: "/api/v2/worker-runs/last/export", Auth: true, Description: publicDescription("Export the current user's most recent CoreClaw run results.", "Use when the user asks to download/export the latest run as CSV or JSON.", "JSON with a temporary download_url.", "Call after get_last_worker_run shows status succeeded."), Params: []v2ParamSpec{formatParam(), filterKeysParam()}},
 		{Name: "get_last_worker_run_log", Method: http.MethodGet, Path: "/api/v2/worker-runs/last/log", Auth: true, Description: publicDescription("Get logs for the current user's most recent CoreClaw worker run.", "Use when debugging why the latest run failed, stalled, or produced unexpected output.", "JSON with recent run log data.", "Call after get_last_worker_run, especially for failed or running states.")},
 		{Name: "rerun_last_worker_run", Method: http.MethodPost, Path: "/api/v2/worker-runs/last/rerun", Auth: true, Description: publicDescription("Rerun the current user's most recent CoreClaw worker run with the same saved inputs.", "Use when the user says rerun last, retry latest, or do the previous scrape again.", "JSON with a new run_slug or synchronous result fields.", "Follow with get_last_worker_run or list_last_worker_run_results depending on is_async."), Params: runBodyParams()},
@@ -484,6 +610,14 @@ func v2ToolSpecs() []v2ToolSpec {
 		{Name: "rerun_worker_run", Method: http.MethodPost, Path: "/api/v2/worker-runs/{runId}/rerun", Auth: true, Description: publicDescription("Rerun a specific CoreClaw worker run with the same saved inputs.", "Use when the user wants to retry or repeat a known run id.", "JSON with a new run_slug or synchronous result fields.", "Follow with get_worker_run or list_worker_run_results for the new run."), Params: append([]v2ParamSpec{runIDPathParam()}, runBodyParams()...)},
 		{Name: "list_worker_run_results", Method: http.MethodGet, Path: "/api/v2/worker-runs/{runId}/result", Auth: true, Description: publicDescription("List paginated results for a specific CoreClaw worker run.", "Use when the user wants records/output rows from a known run id.", "JSON with result rows and pagination metadata.", "Call after get_worker_run shows status succeeded; use export_worker_run_results for large output."), Params: []v2ParamSpec{runIDPathParam(), offsetParam(), limitParam()}},
 		{Name: "export_worker_run_results", Method: http.MethodGet, Path: "/api/v2/worker-runs/{runId}/result/export", Auth: true, Description: publicDescription("Export result data for a specific CoreClaw worker run.", "Use when the user asks to download or save output from a known run as CSV or JSON.", "JSON with a temporary download_url.", "Call after get_worker_run shows status succeeded."), Params: []v2ParamSpec{runIDPathParam(), formatParam(), filterKeysParam()}},
+		// --- worker-task CRUD ---
+		{Name: "create_worker_task", Method: http.MethodPost, Path: "/api/v2/worker-tasks", Auth: true, Description: publicDescription("Create a new saved CoreClaw worker task with input and optional schedule.", "Use when the user wants to save a worker configuration as a reusable, scheduled task.", "JSON with the created task details including slug.", "Follow with run_worker_task using the returned worker_task_id."), Params: []v2ParamSpec{taskWorkerIDBodyParam(), taskTitleParam(), taskInputJSONBodyParam(), taskDescriptionParam(), taskVersionParam(), taskScheduleTypeParam(), taskScheduleTimeParam(), taskScheduleWeekdayParam(), taskScheduleDayParam(), taskScheduleOnceDateParam(), taskScheduleEnabledParam()}},
+		{Name: "get_worker_task", Method: http.MethodGet, Path: "/api/v2/worker-tasks/{workerTaskId}", Auth: true, Description: publicDescription("Get detail for a specific saved CoreClaw worker task.", "Use when the user wants to inspect a saved task's configuration, schedule, or input.", "JSON with task details including title, description, worker_id, input, schedule, and slug.", "Follow with update_worker_task, update_worker_task_input, run_worker_task, or delete_worker_task."), Params: []v2ParamSpec{workerTaskIDParam()}},
+		{Name: "update_worker_task", Method: http.MethodPut, Path: "/api/v2/worker-tasks/{workerTaskId}", Auth: true, Description: publicDescription("Update a saved CoreClaw worker task's metadata and schedule.", "Use when the user wants to change a task's title, description, or schedule settings.", "JSON success envelope data, often null.", "Call after get_worker_task to confirm current settings. Use update_worker_task_input to update the task's input payload separately."), Params: []v2ParamSpec{workerTaskIDParam(), taskTitleParam(), taskDescriptionParam(), taskScheduleTypeParam(), taskScheduleTimeParam(), taskScheduleWeekdayParam(), taskScheduleDayParam(), taskScheduleOnceDateParam(), taskScheduleEnabledParam()}},
+		{Name: "delete_worker_task", Method: http.MethodDelete, Path: "/api/v2/worker-tasks/{workerTaskId}", Auth: true, Description: publicDescription("Delete a saved CoreClaw worker task.", "Use when the user wants to permanently remove a saved task.", "JSON success envelope data, often null.", "Call after list_worker_tasks or get_worker_task confirms the task exists."), Params: []v2ParamSpec{workerTaskIDParam()}},
+		{Name: "get_worker_task_input", Method: http.MethodGet, Path: "/api/v2/worker-tasks/{workerTaskId}/input", Auth: true, Description: publicDescription("Get the input payload for a saved CoreClaw worker task.", "Use when the user wants to inspect or copy a task's saved input parameters.", "JSON with the task's input object and optional version field.", "Follow with update_worker_task_input or run_worker_task."), Params: []v2ParamSpec{workerTaskIDParam()}},
+		{Name: "update_worker_task_input", Method: http.MethodPut, Path: "/api/v2/worker-tasks/{workerTaskId}/input", Auth: true, Description: publicDescription("Update the input payload for a saved CoreClaw worker task.", "Use when the user wants to change a task's saved input parameters without modifying its title/schedule.", "JSON success envelope data, often null.", "Call after get_worker_task_input to confirm the current input. Then use run_worker_task to execute with the new input."), Params: []v2ParamSpec{workerTaskIDParam(), taskInputJSONBodyParam(), taskVersionParam()}},
+
 		{Name: "list_worker_tasks", Method: http.MethodGet, Path: "/api/v2/worker-tasks", Auth: true, Description: publicDescription("List saved CoreClaw worker tasks for the current user.", "Use when the user wants saved tasks, scheduled presets, configured jobs, or task ids.", "JSON list of saved worker tasks.", "Follow with run_worker_task using worker_task_id."), Params: []v2ParamSpec{offsetParam(), limitParam(), {Name: "worker_id", Location: v2QueryParam, Type: v2StringParam, Description: "Filter by worker slug or owner path. Example: \"demo-worker\". (optional)"}, keywordParam()}},
 		{Name: "run_worker_task", Method: http.MethodPost, Path: "/api/v2/worker-tasks/{workerTaskId}/runs", Auth: true, Description: publicDescription("Run a saved CoreClaw worker task.", "Use when the user wants to execute a configured task rather than supply ad-hoc worker input.", "JSON with run_slug or synchronous result fields.", "Follow with get_worker_run or get_last_worker_run, then result/export tools."), Params: append([]v2ParamSpec{workerTaskIDParam()}, runBodyParams()...)},
 		{Name: "list_workers", Method: http.MethodGet, Path: "/api/v2/workers", Auth: true, Description: publicDescription("List CoreClaw workers owned by the current user.", "Use when the user wants their private/current-user workers, not the public marketplace.", "JSON with worker slug, path, title, username, and description.", "Follow with get_worker, get_worker_input_schema, run_worker, or worker-specific last-run tools."), Params: []v2ParamSpec{offsetParam(), limitParam(), keywordParam()}},
@@ -491,7 +625,7 @@ func v2ToolSpecs() []v2ToolSpec {
 		{Name: "get_worker_input_schema", Method: http.MethodGet, Path: "/api/v2/workers/{workerId}/input-schema", Description: publicDescription("Get the public input JSON schema for a CoreClaw worker.", "Use when the user wants to know required input fields or before composing run_worker input_json.", "JSON with input_schema.", "Call before run_worker so input_json matches the worker schema."), Params: []v2ParamSpec{workerIDParam()}},
 		{Name: "run_worker", Method: http.MethodPost, Path: "/api/v2/workers/{workerId}/runs", Auth: true, Description: publicDescription("Run a CoreClaw worker with an ad-hoc JSON input payload.", "Use when the user wants to start, execute, scrape, crawl, or run a worker with specific input.", "JSON with run_slug for async runs or synchronous result fields for sync runs.", "Call get_worker_input_schema first, then run_worker, then get_worker_run or get_last_worker_run, then results/export/log tools."), Params: append([]v2ParamSpec{workerIDParam(), {Name: "version", Location: v2BodyParam, Type: v2StringParam, Description: "Worker script version. Example: \"latest\" or \"1.0.1\". Obtain from get_worker; default is backend latest. (optional)"}, {Name: "input_json", Location: v2BodyParam, Type: v2JSONParam, Description: "Worker business input payload as a JSON object string. Example: {\"keyword\":\"coffee\",\"limit\":10}. The MCP server sends it as input.parameters.custom, matching CoreClaw saved task payloads. Schema comes from get_worker_input_schema. (optional)"}, {Name: "raw_input_json", Location: v2BodyParam, Type: v2JSONParam, Description: "Advanced escape hatch: full CoreClaw input object to send as input without wrapping. Example: {\"parameters\":{\"system\":{\"proxy_region\":\"US\"},\"custom\":{\"keyword\":\"coffee\"}}}. Do not combine with input_json. (optional)"}}, runBodyParams()...)},
 		{Name: "get_worker_last_run", Method: http.MethodGet, Path: "/api/v2/workers/{workerId}/runs/last", Auth: true, Description: publicDescription("Get the most recent run for a specific CoreClaw worker.", "Use when the user asks for the last run of a specific worker.", "JSON with last run details for that worker.", "Follow with worker-specific last result/export/log/rerun/abort tools."), Params: []v2ParamSpec{workerIDParam()}},
-		{Name: "abort_worker_last_run", Method: http.MethodPost, Path: "/api/v2/workers/{workerId}/runs/last/abort", Auth: true, Description: publicDescription("Abort the most recent run for a specific CoreClaw worker.", "Use when the user wants to cancel the latest active run of a known worker.", "JSON success envelope data, often null.", "Call after get_worker_last_run confirms the run is active."), Params: append([]v2ParamSpec{workerIDParam()}, runBodyParams()...)},
+		{Name: "abort_worker_last_run", Method: http.MethodPost, Path: "/api/v2/workers/{workerId}/runs/last/abort", Auth: true, Description: publicDescription("Abort the most recent run for a specific CoreClaw worker.", "Use when the user wants to cancel the latest active run of a known worker.", "JSON success envelope data, often null.", "Call after get_worker_last_run confirms the run is active."), Params: []v2ParamSpec{workerIDParam()}},
 		{Name: "export_worker_last_run_results", Method: http.MethodGet, Path: "/api/v2/workers/{workerId}/runs/last/export", Auth: true, Description: publicDescription("Export results from the most recent run of a specific CoreClaw worker.", "Use when the user asks to download/export the latest output for a known worker.", "JSON with a temporary download_url.", "Call after get_worker_last_run shows status succeeded."), Params: []v2ParamSpec{workerIDParam(), formatParam(), filterKeysParam()}},
 		{Name: "get_worker_last_run_log", Method: http.MethodGet, Path: "/api/v2/workers/{workerId}/runs/last/log", Auth: true, Description: publicDescription("Get logs for the most recent run of a specific CoreClaw worker.", "Use when debugging the latest run for a specific worker.", "JSON with log data.", "Call after get_worker_last_run when status or output needs explanation."), Params: []v2ParamSpec{workerIDParam()}},
 		{Name: "rerun_worker_last_run", Method: http.MethodPost, Path: "/api/v2/workers/{workerId}/runs/last/rerun", Auth: true, Description: publicDescription("Rerun the most recent run for a specific CoreClaw worker.", "Use when the user asks to retry or repeat the latest run for a known worker.", "JSON with a new run_slug or synchronous result fields.", "Follow with get_worker_last_run or list_worker_last_run_results."), Params: append([]v2ParamSpec{workerIDParam()}, runBodyParams()...)},
@@ -529,7 +663,12 @@ func v2ToolWorkflowOrder() []string {
 		"get_worker",
 		"get_worker_input_schema",
 		"list_worker_tasks",
+		"get_worker_task",
+		"get_worker_task_input",
 		"get_account_info",
+		"create_worker_task",
+		"update_worker_task",
+		"update_worker_task_input",
 		"run_worker",
 		"run_worker_task",
 		"list_worker_runs",
@@ -551,5 +690,6 @@ func v2ToolWorkflowOrder() []string {
 		"abort_last_worker_run",
 		"abort_worker_run",
 		"abort_worker_last_run",
+		"delete_worker_task",
 	}
 }

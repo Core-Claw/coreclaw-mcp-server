@@ -56,8 +56,8 @@ function Assert-ToolCount {
   param([string]$Text)
   $json = $Text | ConvertFrom-Json
   $tools = $json.result.tools
-  if ($tools.Count -ne 28) {
-    throw "Expected 28 MCP tools, got $($tools.Count)"
+  if ($tools.Count -ne 34) {
+    throw "Expected 34 MCP tools, got $($tools.Count)"
   }
   $excluded = @("get_worker_internal", "create_worker_version", "update_worker_version")
   foreach ($name in $excluded) {

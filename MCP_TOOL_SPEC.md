@@ -4,8 +4,8 @@ This project exposes CoreClaw OpenAPI v2 as MCP tools. The source of truth is th
 
 ## Coverage Contract
 
-- Total OpenAPI v2 operations: 31
-- Public MCP tools: 28
+- Total OpenAPI v2 operations: 34
+- Public MCP tools: 34
 - Excluded operations:
   - `POST /api/v2/workers/{workerId}/versions`
   - `PUT /api/v2/workers/{workerId}/versions/{version}`
@@ -93,7 +93,7 @@ Parameters must be explicit and stable:
 - Optional pagination parameters include defaults in the description.
 - Enum parameters use `mcp.Enum`.
 - Complex worker input is accepted as `input_json`, a JSON object string, because many MCP clients handle simple strings more reliably than arbitrary nested objects.
-- `run_worker` treats `input_json` as the Worker's business/custom fields and sends it upstream as `input.parameters.custom`, matching CoreClaw saved task payloads observed in the v2 docs and real API. Advanced callers can send a complete upstream `input` object through `raw_input_json`; `input_json` and `raw_input_json` are mutually exclusive.
+- `run_worker`, `create_worker_task`, and `update_worker_task_input` treat `input_json` as the Worker's business/custom fields and send it upstream as `input.parameters.custom`, matching CoreClaw saved task payloads observed in the v2 docs and real API. Sending `input_json` unwrapped makes a created task un-runnable (backend rejects required custom fields). Advanced callers can send a complete upstream `input` object through `raw_input_json` (run_worker only); `input_json` and `raw_input_json` are mutually exclusive.
 
 ## Return Values
 
@@ -110,9 +110,9 @@ Required checks:
 - `go build .`
 - `scripts/verify-real-api.ps1` with `CORECLAW_API_KEY` set for authenticated checks
 - `scripts/verify-e2e-run.ps1` with `CORECLAW_API_KEY` set for a real MCP `tools/call` run, polling, logs, results, and export validation
-- Tool registry test proving 28 exposed tools and the three excluded endpoints absent
-- MCP tools/list test proving 28 tools are visible to MCP clients
-- REST handler test proving 28 `/mcp/<tool_name>` handlers
+- Tool registry test proving 34 exposed tools and the three excluded endpoints absent
+- MCP tools/list test proving 34 tools are visible to MCP clients
+- REST handler test proving 34 `/mcp/<tool_name>` handlers
 - Initialize test proving server instructions and hosted endpoint metadata are visible to MCP clients
 - Annotation test proving every MCP tool has explicit behavior hints
 - Workflow order test proving `tools/list` follows the intended discovery-to-control order
