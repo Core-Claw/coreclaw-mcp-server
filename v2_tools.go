@@ -450,9 +450,9 @@ func formatParam() v2ParamSpec {
 		Name:        "format",
 		Location:    v2QueryParam,
 		Type:        v2StringParam,
-		Description: "Export format. Allowed: csv, json. (default: csv)",
+		Description: "Export format. Supports csv, json, jsonl, xlsx, xls, xml, html, rss (case-insensitive). (default: csv)",
 		Default:     "csv",
-		Enum:        []string{"csv", "json"},
+		Enum:        []string{"csv", "json", "jsonl", "xlsx", "xls", "xml", "html", "rss"},
 	}
 }
 
@@ -543,7 +543,9 @@ func taskScheduleTypeParam() v2ParamSpec {
 		Name:        "schedule_type",
 		Location:    v2BodyParam,
 		Type:        v2NumberParam,
-		Description: "Schedule type: 1=daily, 2=weekly, 3=monthly. (optional)",
+		Description: "Schedule type: 1=daily, 2=weekly, 3=monthly, 4=once. (optional)",
+		Min:         float64Ptr(1),
+		Max:         float64Ptr(4),
 	}
 }
 
@@ -561,7 +563,9 @@ func taskScheduleWeekdayParam() v2ParamSpec {
 		Name:        "schedule_weekday",
 		Location:    v2BodyParam,
 		Type:        v2NumberParam,
-		Description: "Day of week for weekly schedules: 0-6, 0=Sunday. (optional)",
+		Description: "Day of week for weekly schedules: 1=Monday … 7=Sunday. (optional)",
+		Min:         float64Ptr(1),
+		Max:         float64Ptr(7),
 	}
 }
 
@@ -570,7 +574,9 @@ func taskScheduleDayParam() v2ParamSpec {
 		Name:        "schedule_day",
 		Location:    v2BodyParam,
 		Type:        v2NumberParam,
-		Description: "Day of month for monthly schedule. (optional)",
+		Description: "Day of month for monthly schedule (1-31). (optional)",
+		Min:         float64Ptr(1),
+		Max:         float64Ptr(31),
 	}
 }
 
@@ -589,6 +595,8 @@ func taskScheduleEnabledParam() v2ParamSpec {
 		Location:    v2BodyParam,
 		Type:        v2NumberParam,
 		Description: "Schedule switch: 0 disabled, 1 enabled. (optional)",
+		Min:         float64Ptr(0),
+		Max:         float64Ptr(1),
 	}
 }
 
