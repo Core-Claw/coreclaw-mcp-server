@@ -13,6 +13,8 @@ This project exposes CoreClaw OpenAPI v2 as MCP tools. The source of truth is th
 
 Every non-excluded operation must have exactly one MCP tool and one REST shim route at `/mcp/<tool_name>`.
 
+Three operations are intentionally public (`Auth: false`) and match the upstream OpenAPI `security: []` marking: `GET /api/v2/proxy/region`, `GET /api/v2/store`, and `GET /api/v2/workers/{workerId}/input-schema`. All other operations require a CoreClaw token. Do not mark non-public operations as `Auth: false` to "help" callers — it would let unauthenticated MCP requests reach the tool and fail upstream instead of being rejected at the auth layer.
+
 ## Client Entry Contract
 
 The first-class hosted endpoint is:

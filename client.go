@@ -152,8 +152,3 @@ func (c *CoreClawClient) doRequest(req *http.Request) (json.RawMessage, error) {
 	}
 	return coreClawResp.Data, nil
 }
-
-// callbackURL returns a callback endpoint on the configured API host for tests.
-func (c *CoreClawClient) callbackURL() string {
-	return strings.TrimRight(c.baseURL, "/") + "/api/v2/test/callback"
-}

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/server"
 )
@@ -40,8 +41,24 @@ func main() {
 		mux := http.NewServeMux()
 		mux.Handle("/mcp", httpServer)
 		mux.Handle("/mcp/", newRESTHandler(client))
+		// Timeouts harden the public HTTP surface against slowloris-style
+		// slow attacks without cutting off legitimate long streams:
+		//   - ReadHeaderTimeout: bound how long a client may take to send
+		//     headers (no full-read timeout, so SSE/stream responses stay OK).
+		//   - WriteTimeout: generous cap (10 min) that comfortably exceeds
+		//     the 5-minute synchronous-run ceiling while still reclaiming
+		//     stuck connections; does not apply to streamed responses once
+		//     headers are flushed.
+		//   - IdleTimeout: reclaim idle keep-alive sockets.
+		srv := &http.Server{
+			Addr:              addr,
+			Handler:           mux,
+			ReadHeaderTimeout: 10 * time.Second,
+			WriteTimeout:      10 * time.Minute,
+			IdleTimeout:       120 * time.Second,
+		}
 		log.Printf("CoreClaw MCP Server v%s listening on %s (MCP at /mcp, REST shim at /mcp/<tool>)", version, addr)
-		if err := http.ListenAndServe(addr, mux); err != nil {
+		if err := srv.ListenAndServe(); err != nil {
 			log.Fatal(err)
 		}
 	default:

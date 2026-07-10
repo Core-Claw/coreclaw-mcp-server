@@ -20,6 +20,11 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: production
+    # Least-privilege for the auto-generated GITHUB_TOKEN. Deployment uses
+    # SSH secrets, not the GitHub token, so no repo/contents writes are
+    # needed; none granted means none allowed.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
