@@ -30,7 +30,7 @@ The server accepts `api-key`, `X-API-Key`, or `Authorization: Bearer <token>` fr
 ## Scope
 
 - API source of truth: `exported-api-docs/openapi.json` and `exported-api-docs/endpoints.csv`
-- Public v2 operations exposed as MCP tools: 34
+- Public v2 operations exposed as MCP tools: 37 (34 OpenAPI operations + 3 orchestration tools: `poll_run`, `verify_run`, `run_workers_batch`; `get_worker_run_log` adds an optional in-process `grep` filter)
 - Excluded internal operations: `POST /api/v2/workers/{workerId}/versions`, `PUT /api/v2/workers/{workerId}/versions/{version}`, `GET /api/v2/workers/{workerId}/internal`
 - Transports: stdio and Streamable HTTP
 - REST compatibility shim: `POST /mcp/<tool_name>`
@@ -108,16 +108,19 @@ Tools are registered in the same order a model should normally use them: discove
 | `delete_worker_task` | `DELETE /api/v2/worker-tasks/{workerTaskId}` |
 | `run_worker` | `POST /api/v2/workers/{workerId}/runs` |
 | `run_worker_task` | `POST /api/v2/worker-tasks/{workerTaskId}/runs` |
+| `run_workers_batch` | orchestration: per-item `POST /api/v2/workers/{workerId}/runs` + polling |
 | `list_worker_runs` | `GET /api/v2/worker-runs` |
 | `get_last_worker_run` | `GET /api/v2/worker-runs/last` |
 | `get_worker_run` | `GET /api/v2/worker-runs/{runId}` |
+| `poll_run` | orchestration: `GET /api/v2/worker-runs/{runId}` until terminal |
+| `verify_run` | orchestration: `get_worker_run` + `list_worker_run_results` + verdict |
 | `get_worker_last_run` | `GET /api/v2/workers/{workerId}/runs/last` |
 | `list_last_worker_run_results` | `GET /api/v2/worker-runs/last/result` |
 | `export_last_worker_run_results` | `GET /api/v2/worker-runs/last/export` |
 | `get_last_worker_run_log` | `GET /api/v2/worker-runs/last/log` |
 | `list_worker_run_results` | `GET /api/v2/worker-runs/{runId}/result` |
 | `export_worker_run_results` | `GET /api/v2/worker-runs/{runId}/result/export` |
-| `get_worker_run_log` | `GET /api/v2/worker-runs/{runId}/log` |
+| `get_worker_run_log` | `GET /api/v2/worker-runs/{runId}/log` (optional `grep` filters to error/traceback lines) |
 | `list_worker_last_run_results` | `GET /api/v2/workers/{workerId}/runs/last/result` |
 | `export_worker_last_run_results` | `GET /api/v2/workers/{workerId}/runs/last/export` |
 | `get_worker_last_run_log` | `GET /api/v2/workers/{workerId}/runs/last/log` |

@@ -17,8 +17,8 @@ import (
 
 func TestV2PublicToolRegistryMatchesOpenAPIScope(t *testing.T) {
 	specs := v2ToolSpecs()
-	if len(specs) != 34 {
-		t.Fatalf("expected 34 public v2 tools, got %d", len(specs))
+	if len(specs) != 37 {
+		t.Fatalf("expected 37 public v2 tools, got %d", len(specs))
 	}
 
 	seenNames := map[string]bool{}
@@ -90,9 +90,12 @@ func TestV2ToolWorkflowOrder(t *testing.T) {
 		"update_worker_task_input",
 		"run_worker",
 		"run_worker_task",
+		"run_workers_batch",
 		"list_worker_runs",
 		"get_last_worker_run",
 		"get_worker_run",
+		"poll_run",
+		"verify_run",
 		"get_worker_last_run",
 		"list_last_worker_run_results",
 		"export_last_worker_run_results",
@@ -503,8 +506,8 @@ func TestV2ToolRejectsInvalidInputJSON(t *testing.T) {
 
 func TestRESTHandlerIncludesAllV2Tools(t *testing.T) {
 	tools := restToolHandlers(NewCoreClawClient("token", "http://127.0.0.1:1"))
-	if len(tools) != 34 {
-		t.Fatalf("expected 34 REST tool handlers, got %d", len(tools))
+	if len(tools) != 37 {
+		t.Fatalf("expected 37 REST tool handlers, got %d", len(tools))
 	}
 	if _, ok := tools["get_worker_internal"]; ok {
 		t.Fatalf("internal endpoint must not have a REST handler")
@@ -556,8 +559,8 @@ func TestMCPServerListsAllV2Tools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
-	if len(tools.Tools) != 34 {
-		t.Fatalf("expected 34 listed MCP tools, got %d", len(tools.Tools))
+	if len(tools.Tools) != 37 {
+		t.Fatalf("expected 37 listed MCP tools, got %d", len(tools.Tools))
 	}
 
 	found := map[string]bool{}

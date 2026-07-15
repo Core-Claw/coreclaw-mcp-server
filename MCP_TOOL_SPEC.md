@@ -5,13 +5,13 @@ This project exposes CoreClaw OpenAPI v2 as MCP tools. The source of truth is th
 ## Coverage Contract
 
 - Total OpenAPI v2 operations: 34
-- Public MCP tools: 34
+- Public MCP tools: 37
 - Excluded operations:
   - `POST /api/v2/workers/{workerId}/versions`
   - `PUT /api/v2/workers/{workerId}/versions/{version}`
   - `GET /api/v2/workers/{workerId}/internal`
 
-Every non-excluded operation must have exactly one MCP tool and one REST shim route at `/mcp/<tool_name>`.
+Every non-excluded operation must have exactly one MCP tool and one REST shim route at `/mcp/<tool_name>`. The 3 additional tools beyond the 34 OpenAPI operations are orchestration tools with custom handlers (not 1:1 with any single upstream operation): `poll_run` (repeated `get_worker_run` until terminal), `verify_run` (`get_worker_run` + `list_worker_run_results` plus in-process verdict), and `run_workers_batch` (per-item `run_worker` + polling). `get_worker_run_log` remains 1:1 with its OpenAPI operation but adds an in-process `grep` filter parameter; when `grep` is unset it returns the raw upstream payload unchanged.
 
 Three operations are intentionally public (`Auth: false`) and match the upstream OpenAPI `security: []` marking: `GET /api/v2/proxy/region`, `GET /api/v2/store`, and `GET /api/v2/workers/{workerId}/input-schema`. All other operations require a CoreClaw token. Do not mark non-public operations as `Auth: false` to "help" callers — it would let unauthenticated MCP requests reach the tool and fail upstream instead of being rejected at the auth layer.
 
@@ -53,10 +53,11 @@ Tool names should mirror the endpoint intent:
 Register and expose tools in the order a model should normally use them:
 
 1. Discovery and preflight: proxy regions, public store workers, private workers, worker detail, worker input schema, saved tasks, account info.
-2. Execution: ad-hoc worker runs and saved task runs.
+2. Execution: ad-hoc worker runs and saved task runs, plus `run_workers_batch` for bulk execution.
 3. Run lookup: list runs, last run, specific run, worker-specific last run.
-4. Output retrieval: result rows, export links, and logs for last/specific/worker-specific runs.
-5. Repeat and control: rerun tools, then abort tools.
+4. Orchestration: `poll_run` to wait for completion (covers slow workers exceeding a single MCP call), `verify_run` for an acceptance verdict.
+5. Output retrieval: result rows, export links, and logs for last/specific/worker-specific runs.
+6. Repeat and control: rerun tools, then abort tools.
 
 This order is part of the MCP surface and must be tested through `tools/list`, not only through internal slices.
 
@@ -103,6 +104,14 @@ Successful tools return the upstream `data` JSON as tool text. Errors return `mc
 
 The REST shim returns raw JSON on success and `{"error":"..."}` with a 4xx/5xx status on failure.
 
+## Custom Handlers
+
+Most tools use the default transparent passthrough handler: parse params, issue one upstream request, return the `data` payload. Tools needing multi-request orchestration or in-process post-processing set a `CustomHandler func(client *CoreClawClient) server.ToolHandlerFunc` on `v2ToolSpec`; when non-nil it overrides the default handler, and when nil the default is used so all passthrough tools are unaffected.
+
+Custom-handler tools still set `Method`/`Path`/`Auth`/`Params` so `Tool()` generates the MCP schema and annotations correctly. `poll_run` and `verify_run` use synthetic `Path` values (`/api/v2/worker-runs/{runId}/poll` and `.../verify`) so the registry's no-duplicate-endpoint check passes; the handler issues the real `get_worker_run`/`list_worker_run_results` calls itself. `run_workers_batch` uses a synthetic `/api/v2/workers/batch/runs` Path.
+
+`verify_run` codifies the "real data" acceptance standard: `code==0` + `run_status==succeeded` + `data.count>0` + the first row carries at least one non-empty non-diagnostic field. Rows whose only populated fields are diagnostic markers (`error`, `status`, `error_code`, `__coreclaw_data_id__`, etc.) or weak fields alone (`url`) are judged `ERROR_RECORD`, not `PASS` — this prevents a common false-PASS trap where a CAPTCHA/403 row populates the list but carries no payload.
+
 ## Pagination Compensation
 
 CoreClaw list endpoints interpret `(offset, limit)` as 1-indexed paging (`page_index = floor(offset/limit) + 1`), not as an absolute row offset. A request whose `offset` is not a multiple of `limit` therefore returns the wrong window upstream.
@@ -118,9 +127,9 @@ Required checks:
 - `go build .`
 - `scripts/verify-real-api.ps1` with `CORECLAW_API_KEY` set for authenticated checks
 - `scripts/verify-e2e-run.ps1` with `CORECLAW_API_KEY` set for a real MCP `tools/call` run, polling, logs, results, and export validation
-- Tool registry test proving 34 exposed tools and the three excluded endpoints absent
-- MCP tools/list test proving 34 tools are visible to MCP clients
-- REST handler test proving 34 `/mcp/<tool_name>` handlers
+- Tool registry test proving 37 exposed tools and the three excluded endpoints absent
+- MCP tools/list test proving 37 tools are visible to MCP clients
+- REST handler test proving 37 `/mcp/<tool_name>` handlers
 - Initialize test proving server instructions and hosted endpoint metadata are visible to MCP clients
 - Annotation test proving every MCP tool has explicit behavior hints
 - Workflow order test proving `tools/list` follows the intended discovery-to-control order

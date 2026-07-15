@@ -52,6 +52,14 @@ type v2ToolSpec struct {
 	// requested [offset, offset+limit) window out of aligned page requests.
 	// Empty means no compensation (non-list or single-record tools).
 	ListKey string
+	// CustomHandler, when non-nil, overrides the default transparent
+	// passthrough handler (Handler below). Used by tools needing multi-request
+	// orchestration (poll_run, verify_run, run_workers_batch) or in-process
+	// post-processing (get_worker_run_log grep). When nil, the default
+	// single-request passthrough handler is used, so all existing tools are
+	// unaffected. The signature mirrors Handler(client) so server.go and
+	// rest.go keep calling spec.Handler(client) unchanged.
+	CustomHandler func(client *CoreClawClient) server.ToolHandlerFunc
 }
 
 // CoreClaw's list endpoints do not honour `offset` as an absolute row offset.
@@ -121,47 +129,25 @@ func (s v2ToolSpec) openWorldHint() bool {
 }
 
 func (s v2ToolSpec) Handler(client *CoreClawClient) server.ToolHandlerFunc {
+	if s.CustomHandler != nil {
+		return s.CustomHandler(client)
+	}
 	return func(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		path := s.Path
-		query := url.Values{}
-		body := map[string]any{}
-		hasBody := false
-
-		for _, p := range s.Params {
-			value, ok, err := readV2Param(request, p)
-			if err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
-			}
-			if !ok {
-				continue
-			}
-
-			switch p.Location {
-			case v2PathParam:
-				text, ok := value.(string)
-				if !ok {
-					return mcp.NewToolResultError(fmt.Sprintf("%s must be a string path parameter", p.Name)), nil
-				}
-				path = strings.ReplaceAll(path, "{"+toOpenAPIPathParamName(p.Name)+"}", url.PathEscape(text))
-			case v2QueryParam:
-				query.Set(p.Name, formatQueryValue(value))
-			case v2BodyParam:
-				body[toOpenAPIBodyParamName(p.Name)] = value
-				hasBody = true
-			}
+		path, query, body, hasBody, err := s.resolveV2Request(request)
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
 		}
 
 		var data json.RawMessage
-		var err error
 		switch s.Method {
 		case http.MethodGet:
 			data, err = s.doGet(ctx, client, path, query)
 		case http.MethodPost:
 			var bodyArg any
 			if hasBody {
-				preparedBody, err := s.prepareBody(body)
-				if err != nil {
-					return mcp.NewToolResultError(err.Error()), nil
+				preparedBody, perr := s.prepareBody(body)
+				if perr != nil {
+					return mcp.NewToolResultError(perr.Error()), nil
 				}
 				bodyArg = preparedBody
 			} else {
@@ -171,9 +157,9 @@ func (s v2ToolSpec) Handler(client *CoreClawClient) server.ToolHandlerFunc {
 		case http.MethodPut:
 			var bodyArg any
 			if hasBody {
-				preparedBody, err := s.prepareBody(body)
-				if err != nil {
-					return mcp.NewToolResultError(err.Error()), nil
+				preparedBody, perr := s.prepareBody(body)
+				if perr != nil {
+					return mcp.NewToolResultError(perr.Error()), nil
 				}
 				bodyArg = preparedBody
 			} else {
@@ -190,6 +176,42 @@ func (s v2ToolSpec) Handler(client *CoreClawClient) server.ToolHandlerFunc {
 		}
 		return mcp.NewToolResultText(string(data)), nil
 	}
+}
+
+// resolveV2Request parses a tool's params out of an MCP request into the path
+// (with {placeholders} substituted), query values, and body map. Mirrors the
+// default handler's param loop so custom handlers reuse one code path instead
+// of duplicating path/query/body logic. hasBody reports whether any body param
+// was supplied.
+func (s v2ToolSpec) resolveV2Request(request mcp.CallToolRequest) (path string, query url.Values, body map[string]any, hasBody bool, err error) {
+	path = s.Path
+	query = url.Values{}
+	body = map[string]any{}
+	for _, p := range s.Params {
+		value, ok, perr := readV2Param(request, p)
+		if perr != nil {
+			err = perr
+			return
+		}
+		if !ok {
+			continue
+		}
+		switch p.Location {
+		case v2PathParam:
+			text, ok := value.(string)
+			if !ok {
+				err = fmt.Errorf("%s must be a string path parameter", p.Name)
+				return
+			}
+			path = strings.ReplaceAll(path, "{"+toOpenAPIPathParamName(p.Name)+"}", url.PathEscape(text))
+		case v2QueryParam:
+			query.Set(p.Name, formatQueryValue(value))
+		case v2BodyParam:
+			body[toOpenAPIBodyParamName(p.Name)] = value
+			hasBody = true
+		}
+	}
+	return
 }
 
 // doGet performs a GET for this tool. When the tool carries a ListKey and the
@@ -790,10 +812,14 @@ func v2ToolSpecs() []v2ToolSpec {
 		{Name: "list_last_worker_run_results", Method: http.MethodGet, Path: "/api/v2/worker-runs/last/result", Auth: true, ListKey: "list", Description: publicDescription("List paginated results from the current user's most recent CoreClaw run.", "Use when the user wants to preview, inspect, or page through latest run output.", "JSON with result rows and pagination metadata.", "Call after get_last_worker_run shows status succeeded; use export_last_worker_run_results for large output."), Params: []v2ParamSpec{offsetParam(), limitParam()}},
 		{Name: "get_worker_run", Method: http.MethodGet, Path: "/api/v2/worker-runs/{runId}", Auth: true, Description: publicDescription("Get detail for a specific CoreClaw worker run by run_id.", "Use when the user gives a run id or wants status/cost/detail for a specific run.", "JSON with run status, worker, version, timestamps, usage, traffic, error, and result count.", "Follow with results, logs, export, rerun, or abort tools for the same run_id."), Params: []v2ParamSpec{runIDPathParam()}},
 		{Name: "abort_worker_run", Method: http.MethodPost, Path: "/api/v2/worker-runs/{runId}/abort", Auth: true, Description: publicDescription("Abort a specific CoreClaw worker run by run_id.", "Use when the user wants to cancel a known running run.", "JSON success envelope data, often null.", "Call after get_worker_run confirms status is ready or running."), Params: []v2ParamSpec{runIDPathParam()}},
-		{Name: "get_worker_run_log", Method: http.MethodGet, Path: "/api/v2/worker-runs/{runId}/log", Auth: true, Description: publicDescription("Get logs for a specific CoreClaw worker run.", "Use to debug a known run id, especially failed, stalled, or suspicious runs.", "JSON with log data for the run.", "Call after get_worker_run when status or output needs explanation."), Params: []v2ParamSpec{runIDPathParam()}},
+		{Name: "get_worker_run_log", Method: http.MethodGet, Path: "/api/v2/worker-runs/{runId}/log", Auth: true, Description: publicDescription("Get logs for a specific CoreClaw worker run, optionally filtered to lines matching error/traceback keywords.", "Use to debug a known run id, especially failed, stalled, or suspicious runs. Pass grep to extract only Error/Traceback/403/etc. lines instead of reading the whole log; the raw log often has only a few system lines and the traceback is buried.", "JSON with log data. When grep is set, returns {matched_count, lines[]} with surrounding context lines.", "Call after get_worker_run when status or output needs explanation."), Params: []v2ParamSpec{runIDPathParam(), {Name: "grep", Location: v2QueryParam, Type: v2StringParam, Description: "Optional. Pipe-separated keywords to match (case-insensitive). Example: \"Error|raise|Exception|Traceback|BANNED|403|429\". When set, only matching lines (with context) are returned. (optional)"}, {Name: "context_lines", Location: v2QueryParam, Type: v2NumberParam, Description: "Context lines before and after each match when grep is set. (default: 2)", Default: 2, Min: float64Ptr(0), Max: float64Ptr(20)}, {Name: "max_matches", Location: v2QueryParam, Type: v2NumberParam, Description: "Cap on matched regions returned. (default: 50)", Default: 50, Min: float64Ptr(1), Max: float64Ptr(500)}}, CustomHandler: getWorkerRunLogHandler},
 		{Name: "rerun_worker_run", Method: http.MethodPost, Path: "/api/v2/worker-runs/{runId}/rerun", Auth: true, Description: publicDescription("Rerun a specific CoreClaw worker run with the same saved inputs.", "Use when the user wants to retry or repeat a known run id.", "JSON with a new run_slug or synchronous result fields.", "Follow with get_worker_run or list_worker_run_results for the new run."), Params: append([]v2ParamSpec{runIDPathParam()}, runBodyParams()...)},
 		{Name: "list_worker_run_results", Method: http.MethodGet, Path: "/api/v2/worker-runs/{runId}/result", Auth: true, ListKey: "list", Description: publicDescription("List paginated results for a specific CoreClaw worker run.", "Use when the user wants records/output rows from a known run id.", "JSON with result rows and pagination metadata.", "Call after get_worker_run shows status succeeded; use export_worker_run_results for large output."), Params: []v2ParamSpec{runIDPathParam(), offsetParam(), limitParam()}},
 		{Name: "export_worker_run_results", Method: http.MethodGet, Path: "/api/v2/worker-runs/{runId}/result/export", Auth: true, Description: publicDescription("Export result data for a specific CoreClaw worker run.", "Use when the user asks to download or save output from a known run as CSV or JSON.", "JSON with a temporary download_url.", "Call after get_worker_run shows status succeeded."), Params: []v2ParamSpec{runIDPathParam(), formatParam(), filterKeysParam()}},
+		// --- orchestration tools (custom handlers; not 1:1 with OpenAPI ops) ---
+		{Name: "poll_run", Method: http.MethodGet, Path: "/api/v2/worker-runs/{runId}/poll", Auth: true, Description: publicDescription("Poll a CoreClaw worker run until it reaches a terminal state (succeeded/failed/aborted) or the timeout elapses, then return the final status and optionally a result preview.", "Use when run_worker returned an async run and the caller wants to wait for completion without manually calling get_worker_run in a loop. Covers slow workers (LinkedIn/YouTube/glassdoor 60-285s) that exceed a single MCP call.", "JSON with final status, err_msg, poll_count, elapsed_ms, and (on success) result count + first-row sample fields.", "Call after run_worker or rerun_worker_run. Follow with verify_run for a PASS/NO_DATA verdict, or list_worker_run_results / get_worker_run_log for detail."), Params: []v2ParamSpec{runIDPathParam(), {Name: "timeout_seconds", Location: v2QueryParam, Type: v2NumberParam, Description: "Maximum total seconds to poll before giving up. (default: 300)", Default: 300, Min: float64Ptr(1), Max: float64Ptr(900)}, {Name: "poll_interval_seconds", Location: v2QueryParam, Type: v2NumberParam, Description: "Seconds between status checks. (default: 5)", Default: 5, Min: float64Ptr(1), Max: float64Ptr(60)}, {Name: "limit", Location: v2QueryParam, Type: v2NumberParam, Description: "When the run succeeds, pre-fetch this many result rows for the preview. 0 disables. (default: 10)", Default: 10, Min: float64Ptr(0), Max: float64Ptr(100)}}, CustomHandler: pollRunHandler},
+		{Name: "verify_run", Method: http.MethodGet, Path: "/api/v2/worker-runs/{runId}/verify", Auth: true, Description: publicDescription("Verify a CoreClaw worker run produced real, usable data and return a structured PASS/NO_DATA/FAILED/ERROR_RECORD verdict.", "Use after a run reaches a terminal state to get an acceptance verdict without manually inspecting result rows. Distinguishes genuine data from error records (e.g. CAPTCHA/403 rows that populate the list but carry no real payload) — a common false-PASS trap.", "JSON: {verdict, status, count, real_field_count, sample_fields[], err_msg, err_lines[]}. verdict: PASS|NO_DATA|FAILED|ERROR_RECORD|RUNNING|SUBMIT_FAIL.", "Call after poll_run or get_worker_run shows a terminal state. Use get_worker_run_log for failure diagnosis and export_worker_run_results for full data."), Params: []v2ParamSpec{runIDPathParam(), {Name: "limit", Location: v2QueryParam, Type: v2NumberParam, Description: "How many leading result rows to inspect for the real-data sniff. (default: 5)", Default: 5, Min: float64Ptr(1), Max: float64Ptr(20)}}, CustomHandler: verifyRunHandler},
+		{Name: "run_workers_batch", Method: http.MethodPost, Path: "/api/v2/workers/batch/runs", Auth: true, Description: publicDescription("Run multiple CoreClaw workers in one call and return a per-item summary (run_slug, status, verdict). Serial by default; optional concurrency.", "Use when accepting/validating many workers at once (e.g. full-store smoke test) to avoid many individual run_worker calls. Each item is an ad-hoc run_worker (async). The tool polls each run to a terminal state and returns a summary array. Note: the batch Path is synthetic; the custom handler issues per-item run_worker requests.", "JSON: {total, counts, results:[{worker_id, run_slug, status, verdict, err_msg, real_field_count}]}. Items are processed in input order.", "Call after list_store_workers/list_workers + get_worker_input_schema for each item. Follow with get_worker_run_log on any FAILED/ERROR_RECORD item."), Params: []v2ParamSpec{{Name: "items", Location: v2BodyParam, Type: v2JSONParam, Required: true, Description: "JSON array of {worker_id, input_json, version?}. Max 50 items."}, {Name: "concurrency", Location: v2BodyParam, Type: v2NumberParam, Description: "Max parallel runs. 1 = serial. (default: 1)", Default: 1, Min: float64Ptr(1), Max: float64Ptr(10)}, {Name: "timeout_seconds", Location: v2BodyParam, Type: v2NumberParam, Description: "Per-item poll timeout. (default: 180)", Default: 180, Min: float64Ptr(10), Max: float64Ptr(600)}, {Name: "poll_interval_seconds", Location: v2BodyParam, Type: v2NumberParam, Description: "Seconds between status checks per item. (default: 5)", Default: 5, Min: float64Ptr(1), Max: float64Ptr(60)}, {Name: "verify", Location: v2BodyParam, Type: v2BoolParam, Description: "Run verify_run judgment on each succeeded item. (default: true)", Default: true}, {Name: "skip_run_ids", Location: v2BodyParam, Type: v2JSONParam, Description: "JSON array of run_ids already completed; handler skips polling for items returning one of these and marks SKIPPED. Best-effort: re-submitting ad-hoc input starts a new run, so for exact resume omit completed items from items instead. (optional)"}}, CustomHandler: runWorkersBatchHandler},
 		// --- worker-task CRUD ---
 		{Name: "create_worker_task", Method: http.MethodPost, Path: "/api/v2/worker-tasks", Auth: true, Description: publicDescription("Create a new saved CoreClaw worker task with input and optional schedule.", "Use when the user wants to save a worker configuration as a reusable, scheduled task.", "JSON with the created task details including slug.", "Follow with run_worker_task using the returned worker_task_id."), Params: []v2ParamSpec{taskWorkerIDBodyParam(), taskTitleParam(), taskInputJSONBodyParam(), taskDescriptionParam(), taskVersionParam(), taskScheduleTypeParam(), taskScheduleTimeParam(), taskScheduleWeekdayParam(), taskScheduleDayParam(), taskScheduleOnceDateParam(), taskScheduleEnabledParam()}},
 		{Name: "get_worker_task", Method: http.MethodGet, Path: "/api/v2/worker-tasks/{workerTaskId}", Auth: true, Description: publicDescription("Get detail for a specific saved CoreClaw worker task.", "Use when the user wants to inspect a saved task's configuration, schedule, or input.", "JSON with task details including title, description, worker_id, input, schedule, and slug.", "Follow with update_worker_task, update_worker_task_input, run_worker_task, or delete_worker_task."), Params: []v2ParamSpec{workerTaskIDParam()}},
@@ -854,9 +880,12 @@ func v2ToolWorkflowOrder() []string {
 		"update_worker_task_input",
 		"run_worker",
 		"run_worker_task",
+		"run_workers_batch",
 		"list_worker_runs",
 		"get_last_worker_run",
 		"get_worker_run",
+		"poll_run",
+		"verify_run",
 		"get_worker_last_run",
 		"list_last_worker_run_results",
 		"export_last_worker_run_results",
