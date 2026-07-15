@@ -103,6 +103,12 @@ Successful tools return the upstream `data` JSON as tool text. Errors return `mc
 
 The REST shim returns raw JSON on success and `{"error":"..."}` with a 4xx/5xx status on failure.
 
+## Pagination Compensation
+
+CoreClaw list endpoints interpret `(offset, limit)` as 1-indexed paging (`page_index = floor(offset/limit) + 1`), not as an absolute row offset. A request whose `offset` is not a multiple of `limit` therefore returns the wrong window upstream.
+
+Every paginated GET list tool sets `ListKey` (`scraper` for store/workers, `list` for worker-runs/worker-tasks/results). When `offset % limit != 0`, the handler transparently walks aligned upstream pages and stitches the exact `[offset, offset+limit)` window. Aligned requests (including `offset=0`) issue a single upstream call. `TestV2ListToolsCarryListKey` enforces that list tools set `ListKey` and non-list tools do not.
+
 ## Verification
 
 Required checks:

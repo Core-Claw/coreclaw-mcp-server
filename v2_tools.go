@@ -46,6 +46,35 @@ type v2ToolSpec struct {
 	Auth        bool
 	Description string
 	Params      []v2ParamSpec
+	// ListKey marks the JSON key under upstream `data` whose value is the
+	// paginated array. When set, the handler transparently compensates for an
+	// upstream pagination bug (see compensatePagination) by stitching the
+	// requested [offset, offset+limit) window out of aligned page requests.
+	// Empty means no compensation (non-list or single-record tools).
+	ListKey string
+}
+
+// CoreClaw's list endpoints do not honour `offset` as an absolute row offset.
+// Internally they convert (offset, limit) into 1-indexed pages via
+// page_index = floor(offset/limit) + 1 and page_size = limit, so a request for
+// offset=80, limit=100 actually returns rows [0,100) (page 1), and
+// offset=20, limit=50 returns [0,50). Only when offset is an exact multiple of
+// limit does offset coincide with the true row offset. This is an upstream
+// backend bug, not an MCP transport issue.
+//
+// paginationLimitCap mirrors the upstream hard cap on page size.
+const paginationLimitCap = 100
+
+// paginationNeedsCompensation reports whether a single naive upstream request
+// would NOT return the exact requested [offset, offset+limit) window. That is
+// true whenever offset is not an exact multiple of limit. When offset is a
+// multiple of limit (including offset==0), one aligned request already yields
+// the correct window and no compensation is needed.
+func paginationNeedsCompensation(offset, limit int) bool {
+	if limit <= 0 {
+		return false
+	}
+	return offset%limit != 0
 }
 
 func (s v2ToolSpec) Tool() mcp.Tool {
@@ -126,11 +155,7 @@ func (s v2ToolSpec) Handler(client *CoreClawClient) server.ToolHandlerFunc {
 		var err error
 		switch s.Method {
 		case http.MethodGet:
-			if s.Auth {
-				data, err = client.doGetAuth(ctx, path, query)
-			} else {
-				data, err = client.doGet(ctx, path, query)
-			}
+			data, err = s.doGet(ctx, client, path, query)
 		case http.MethodPost:
 			var bodyArg any
 			if hasBody {
@@ -165,6 +190,157 @@ func (s v2ToolSpec) Handler(client *CoreClawClient) server.ToolHandlerFunc {
 		}
 		return mcp.NewToolResultText(string(data)), nil
 	}
+}
+
+// doGet performs a GET for this tool. When the tool carries a ListKey and the
+// requested (offset, limit) window would not be honoured by a single naive
+// upstream request (i.e. offset is not a multiple of limit), it transparently
+// stitches the requested absolute window out of aligned page requests.
+// Otherwise it performs a single upstream GET.
+func (s v2ToolSpec) doGet(ctx context.Context, client *CoreClawClient, path string, query url.Values) (json.RawMessage, error) {
+	offset, limit, hasPager := readPaginationQuery(query)
+	if s.ListKey == "" || !hasPager || !paginationNeedsCompensation(offset, limit) {
+		if s.Auth {
+			return client.doGetAuth(ctx, path, query)
+		}
+		return client.doGet(ctx, path, query)
+	}
+	return s.compensatePagination(ctx, client, path, query, offset, limit)
+}
+
+// compensatePagination fetches the absolute row window [offset, offset+limit)
+// even though the upstream backend interprets (offset, limit) as 1-indexed
+// page_index = floor(offset/limit)+1. It works in units of `limit`-sized
+// pages:
+//
+//	base  = floor(offset/limit) * limit   // largest aligned page start ≤ offset
+//	lead  = offset - base                  // rows to drop from the first page
+//	We then walk forward aligned pages (offset = base, base+limit, ...) until
+//	the collected rows cover [offset, offset+limit), drop the leading `lead`
+//	rows, and trim to exactly `limit` rows.
+//
+// When offset is already aligned (lead == 0) the loop emits exactly one page.
+// This path is only entered when offset % limit != 0, so lead >= 1.
+func (s v2ToolSpec) compensatePagination(ctx context.Context, client *CoreClawClient, path string, query url.Values, offset, limit int) (json.RawMessage, error) {
+	base := (offset / limit) * limit
+	lead := offset - base // [1, limit-1] since we only enter when offset%limit != 0
+
+	baseQ := cloneQueryWithoutPager(query)
+
+	var collected []any
+	var template map[string]any
+	cur := base
+	// Upper bound on pages: lead + limit rows needed, each page yields up to
+	// `limit` rows, so at most ceil((lead+limit)/limit) + 1 pages. Cap
+	// defensively to avoid an unbounded loop against a misbehaving backend.
+	maxPages := (lead+limit)/limit + 2
+	pages := 0
+	for len(collected) < lead+limit && pages < maxPages {
+		pages++
+		q := queryForWindow(baseQ, cur, limit)
+		var raw json.RawMessage
+		var err error
+		if s.Auth {
+			raw, err = client.doGetAuth(ctx, path, q)
+		} else {
+			raw, err = client.doGet(ctx, path, q)
+		}
+		if err != nil {
+			return nil, err
+		}
+		decoded, list, ok, err := decodeListPage(raw, s.ListKey)
+		if err != nil {
+			return nil, err
+		}
+		if template == nil {
+			template = decoded
+		}
+		if !ok || len(list) == 0 {
+			break // dataset exhausted
+		}
+		collected = append(collected, list...)
+		// A short page (fewer than `limit` rows) is the dataset's last page;
+		// stop walking so we never issue a trailing empty request.
+		if len(list) < limit {
+			break
+		}
+		cur += limit
+	}
+
+	// Trim: drop the leading `lead` rows, keep at most `limit`.
+	start := lead
+	if start > len(collected) {
+		start = len(collected)
+	}
+	trimmed := collected[start:]
+	if len(trimmed) > limit {
+		trimmed = trimmed[:limit]
+	}
+
+	if template == nil {
+		template = map[string]any{}
+	}
+	template[s.ListKey] = trimmed
+	// Reflect the merged slice length so page_size stays truthful.
+	if _, hasPageSize := template["page_size"]; hasPageSize {
+		template["page_size"] = len(trimmed)
+	}
+	return json.Marshal(template)
+}
+
+// decodeListPage unmarshals an upstream `data` envelope and extracts its list
+// array. Returns the decoded object (for reuse as the response template), the
+// list slice, whether the list key was present, and any parse error.
+func decodeListPage(raw json.RawMessage, listKey string) (map[string]any, []any, bool, error) {
+	var data map[string]any
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return nil, nil, false, fmt.Errorf("failed to parse paginated response: %w", err)
+	}
+	rawList, ok := data[listKey]
+	if !ok {
+		return data, nil, false, nil
+	}
+	list, ok := rawList.([]any)
+	if !ok {
+		return data, nil, false, nil
+	}
+	return data, list, true, nil
+}
+
+// cloneQueryWithoutPager copies query values minus offset/limit so per-window
+// pagination values can be set freshly.
+func cloneQueryWithoutPager(q url.Values) url.Values {
+	out := url.Values{}
+	for k, vs := range q {
+		if k == "offset" || k == "limit" {
+			continue
+		}
+		out[k] = append([]string{}, vs...)
+	}
+	return out
+}
+
+func queryForWindow(base url.Values, offset, limit int) url.Values {
+	q := cloneQueryWithoutPager(base)
+	q.Set("offset", strconv.Itoa(offset))
+	q.Set("limit", strconv.Itoa(limit))
+	return q
+}
+
+// readPaginationQuery extracts offset/limit from the request query values.
+// Returns hasPager=false if either is missing or non-numeric.
+func readPaginationQuery(q url.Values) (offset, limit int, hasPager bool) {
+	os, ok1 := q["offset"]
+	ls, ok2 := q["limit"]
+	if !ok1 || !ok2 || len(os) == 0 || len(ls) == 0 {
+		return 0, 0, false
+	}
+	o, err1 := strconv.Atoi(os[0])
+	l, err2 := strconv.Atoi(ls[0])
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	return o, l, true
 }
 
 func (s v2ToolSpec) prepareBody(body map[string]any) (map[string]any, error) {
@@ -603,20 +779,20 @@ func taskScheduleEnabledParam() v2ParamSpec {
 func v2ToolSpecs() []v2ToolSpec {
 	return orderV2ToolSpecs([]v2ToolSpec{
 		{Name: "list_proxy_regions", Method: http.MethodGet, Path: "/api/v2/proxy/region", Description: publicDescription("List CoreClaw proxy regions in English or Chinese.", "Use when the user needs proxy country or region codes before running a worker, such as US, JP, DE, or Chinese localized names.", "JSON with a list of proxy regions and region codes.", "Call before run_worker when the worker input schema asks for proxy_region."), Params: []v2ParamSpec{{Name: "language", Location: v2QueryParam, Type: v2StringParam, Description: "Region display language. Example: \"en\" or \"zh\". (default: en)", Default: "en"}}},
-		{Name: "list_store_workers", Method: http.MethodGet, Path: "/api/v2/store", Description: publicDescription("Search the public CoreClaw worker marketplace for ready-to-run workers.", "Use when the user wants to find, discover, browse, or search CoreClaw scrapers/workers by keyword or site name.", "JSON with matching store workers, including slug, path, title, username, and description.", "Usually first step. Follow with get_worker_input_schema or get_worker before run_worker."), Params: []v2ParamSpec{offsetParam(), limitParam(), keywordParam()}},
+		{Name: "list_store_workers", Method: http.MethodGet, Path: "/api/v2/store", ListKey: "scraper", Description: publicDescription("Search the public CoreClaw worker marketplace for ready-to-run workers.", "Use when the user wants to find, discover, browse, or search CoreClaw scrapers/workers by keyword or site name.", "JSON with matching store workers, including slug, path, title, username, and description.", "Usually first step. Follow with get_worker_input_schema or get_worker before run_worker."), Params: []v2ParamSpec{offsetParam(), limitParam(), keywordParam()}},
 		{Name: "get_account_info", Method: http.MethodGet, Path: "/api/v2/users/account", Auth: true, Description: publicDescription("Get the current user's CoreClaw account balance and traffic quota.", "Use when the user asks for balance, remaining traffic, quota, billing state, or whether they can run jobs.", "JSON with balance and balance_expiration_at.", "Terminal call or preflight before run_worker.")},
-		{Name: "list_worker_runs", Method: http.MethodGet, Path: "/api/v2/worker-runs", Auth: true, Description: publicDescription("List the current user's CoreClaw worker runs.", "Use when the user wants run history, recent jobs, or to find a run_id by worker or status.", "JSON with count, list, offset/page data, run slug, worker info, status, usage, traffic, and timestamps.", "Follow with get_worker_run, list_worker_run_results, export_worker_run_results, rerun_worker_run, or abort_worker_run."), Params: []v2ParamSpec{offsetParam(), limitParam(), {Name: "worker_id", Location: v2QueryParam, Type: v2StringParam, Description: "Filter by worker slug or owner path. Example: \"demo-worker\" or \"owner~demo-worker\". (optional)"}, {Name: "status", Location: v2QueryParam, Type: v2StringParam, Description: "Filter by run status. Allowed: ready, running, succeeded, failed, aborting. (optional)", Enum: []string{"ready", "running", "succeeded", "failed", "aborting"}}}},
+		{Name: "list_worker_runs", Method: http.MethodGet, Path: "/api/v2/worker-runs", Auth: true, ListKey: "list", Description: publicDescription("List the current user's CoreClaw worker runs.", "Use when the user wants run history, recent jobs, or to find a run_id by worker or status.", "JSON with count, list, offset/page data, run slug, worker info, status, usage, traffic, and timestamps.", "Follow with get_worker_run, list_worker_run_results, export_worker_run_results, rerun_worker_run, or abort_worker_run."), Params: []v2ParamSpec{offsetParam(), limitParam(), {Name: "worker_id", Location: v2QueryParam, Type: v2StringParam, Description: "Filter by worker slug or owner path. Example: \"demo-worker\" or \"owner~demo-worker\". (optional)"}, {Name: "status", Location: v2QueryParam, Type: v2StringParam, Description: "Filter by run status. Allowed: ready, running, succeeded, failed, aborting. (optional)", Enum: []string{"ready", "running", "succeeded", "failed", "aborting"}}}},
 		{Name: "get_last_worker_run", Method: http.MethodGet, Path: "/api/v2/worker-runs/last", Auth: true, Description: publicDescription("Get the current user's most recent CoreClaw worker run.", "Use when the user says last run, latest job, most recent scrape, or asks what just happened.", "JSON with the latest run's slug, status, worker, version, timestamps, usage, traffic, and result count.", "Follow with list_last_worker_run_results, export_last_worker_run_results, get_last_worker_run_log, rerun_last_worker_run, or abort_last_worker_run.")},
 		{Name: "abort_last_worker_run", Method: http.MethodPost, Path: "/api/v2/worker-runs/last/abort", Auth: true, Description: publicDescription("Abort the current user's most recent CoreClaw worker run.", "Use when the user wants to stop or cancel the last running job.", "JSON success envelope data, often null.", "Call after get_last_worker_run confirms the last run is still active."), Params: []v2ParamSpec{}},
 		{Name: "export_last_worker_run_results", Method: http.MethodGet, Path: "/api/v2/worker-runs/last/export", Auth: true, Description: publicDescription("Export the current user's most recent CoreClaw run results.", "Use when the user asks to download/export the latest run as CSV or JSON.", "JSON with a temporary download_url.", "Call after get_last_worker_run shows status succeeded."), Params: []v2ParamSpec{formatParam(), filterKeysParam()}},
 		{Name: "get_last_worker_run_log", Method: http.MethodGet, Path: "/api/v2/worker-runs/last/log", Auth: true, Description: publicDescription("Get logs for the current user's most recent CoreClaw worker run.", "Use when debugging why the latest run failed, stalled, or produced unexpected output.", "JSON with recent run log data.", "Call after get_last_worker_run, especially for failed or running states.")},
 		{Name: "rerun_last_worker_run", Method: http.MethodPost, Path: "/api/v2/worker-runs/last/rerun", Auth: true, Description: publicDescription("Rerun the current user's most recent CoreClaw worker run with the same saved inputs.", "Use when the user says rerun last, retry latest, or do the previous scrape again.", "JSON with a new run_slug or synchronous result fields.", "Follow with get_last_worker_run or list_last_worker_run_results depending on is_async."), Params: runBodyParams()},
-		{Name: "list_last_worker_run_results", Method: http.MethodGet, Path: "/api/v2/worker-runs/last/result", Auth: true, Description: publicDescription("List paginated results from the current user's most recent CoreClaw run.", "Use when the user wants to preview, inspect, or page through latest run output.", "JSON with result rows and pagination metadata.", "Call after get_last_worker_run shows status succeeded; use export_last_worker_run_results for large output."), Params: []v2ParamSpec{offsetParam(), limitParam()}},
+		{Name: "list_last_worker_run_results", Method: http.MethodGet, Path: "/api/v2/worker-runs/last/result", Auth: true, ListKey: "list", Description: publicDescription("List paginated results from the current user's most recent CoreClaw run.", "Use when the user wants to preview, inspect, or page through latest run output.", "JSON with result rows and pagination metadata.", "Call after get_last_worker_run shows status succeeded; use export_last_worker_run_results for large output."), Params: []v2ParamSpec{offsetParam(), limitParam()}},
 		{Name: "get_worker_run", Method: http.MethodGet, Path: "/api/v2/worker-runs/{runId}", Auth: true, Description: publicDescription("Get detail for a specific CoreClaw worker run by run_id.", "Use when the user gives a run id or wants status/cost/detail for a specific run.", "JSON with run status, worker, version, timestamps, usage, traffic, error, and result count.", "Follow with results, logs, export, rerun, or abort tools for the same run_id."), Params: []v2ParamSpec{runIDPathParam()}},
 		{Name: "abort_worker_run", Method: http.MethodPost, Path: "/api/v2/worker-runs/{runId}/abort", Auth: true, Description: publicDescription("Abort a specific CoreClaw worker run by run_id.", "Use when the user wants to cancel a known running run.", "JSON success envelope data, often null.", "Call after get_worker_run confirms status is ready or running."), Params: []v2ParamSpec{runIDPathParam()}},
 		{Name: "get_worker_run_log", Method: http.MethodGet, Path: "/api/v2/worker-runs/{runId}/log", Auth: true, Description: publicDescription("Get logs for a specific CoreClaw worker run.", "Use to debug a known run id, especially failed, stalled, or suspicious runs.", "JSON with log data for the run.", "Call after get_worker_run when status or output needs explanation."), Params: []v2ParamSpec{runIDPathParam()}},
 		{Name: "rerun_worker_run", Method: http.MethodPost, Path: "/api/v2/worker-runs/{runId}/rerun", Auth: true, Description: publicDescription("Rerun a specific CoreClaw worker run with the same saved inputs.", "Use when the user wants to retry or repeat a known run id.", "JSON with a new run_slug or synchronous result fields.", "Follow with get_worker_run or list_worker_run_results for the new run."), Params: append([]v2ParamSpec{runIDPathParam()}, runBodyParams()...)},
-		{Name: "list_worker_run_results", Method: http.MethodGet, Path: "/api/v2/worker-runs/{runId}/result", Auth: true, Description: publicDescription("List paginated results for a specific CoreClaw worker run.", "Use when the user wants records/output rows from a known run id.", "JSON with result rows and pagination metadata.", "Call after get_worker_run shows status succeeded; use export_worker_run_results for large output."), Params: []v2ParamSpec{runIDPathParam(), offsetParam(), limitParam()}},
+		{Name: "list_worker_run_results", Method: http.MethodGet, Path: "/api/v2/worker-runs/{runId}/result", Auth: true, ListKey: "list", Description: publicDescription("List paginated results for a specific CoreClaw worker run.", "Use when the user wants records/output rows from a known run id.", "JSON with result rows and pagination metadata.", "Call after get_worker_run shows status succeeded; use export_worker_run_results for large output."), Params: []v2ParamSpec{runIDPathParam(), offsetParam(), limitParam()}},
 		{Name: "export_worker_run_results", Method: http.MethodGet, Path: "/api/v2/worker-runs/{runId}/result/export", Auth: true, Description: publicDescription("Export result data for a specific CoreClaw worker run.", "Use when the user asks to download or save output from a known run as CSV or JSON.", "JSON with a temporary download_url.", "Call after get_worker_run shows status succeeded."), Params: []v2ParamSpec{runIDPathParam(), formatParam(), filterKeysParam()}},
 		// --- worker-task CRUD ---
 		{Name: "create_worker_task", Method: http.MethodPost, Path: "/api/v2/worker-tasks", Auth: true, Description: publicDescription("Create a new saved CoreClaw worker task with input and optional schedule.", "Use when the user wants to save a worker configuration as a reusable, scheduled task.", "JSON with the created task details including slug.", "Follow with run_worker_task using the returned worker_task_id."), Params: []v2ParamSpec{taskWorkerIDBodyParam(), taskTitleParam(), taskInputJSONBodyParam(), taskDescriptionParam(), taskVersionParam(), taskScheduleTypeParam(), taskScheduleTimeParam(), taskScheduleWeekdayParam(), taskScheduleDayParam(), taskScheduleOnceDateParam(), taskScheduleEnabledParam()}},
@@ -626,9 +802,9 @@ func v2ToolSpecs() []v2ToolSpec {
 		{Name: "get_worker_task_input", Method: http.MethodGet, Path: "/api/v2/worker-tasks/{workerTaskId}/input", Auth: true, Description: publicDescription("Get the input payload for a saved CoreClaw worker task.", "Use when the user wants to inspect or copy a task's saved input parameters.", "JSON with the task's input object and optional version field.", "Follow with update_worker_task_input or run_worker_task."), Params: []v2ParamSpec{workerTaskIDParam()}},
 		{Name: "update_worker_task_input", Method: http.MethodPut, Path: "/api/v2/worker-tasks/{workerTaskId}/input", Auth: true, Description: publicDescription("Update the input payload for a saved CoreClaw worker task.", "Use when the user wants to change a task's saved input parameters without modifying its title/schedule.", "JSON success envelope data, often null.", "Call after get_worker_task_input to confirm the current input. Then use run_worker_task to execute with the new input."), Params: []v2ParamSpec{workerTaskIDParam(), taskInputJSONBodyParam(), taskVersionParam()}},
 
-		{Name: "list_worker_tasks", Method: http.MethodGet, Path: "/api/v2/worker-tasks", Auth: true, Description: publicDescription("List saved CoreClaw worker tasks for the current user.", "Use when the user wants saved tasks, scheduled presets, configured jobs, or task ids.", "JSON list of saved worker tasks.", "Follow with run_worker_task using worker_task_id."), Params: []v2ParamSpec{offsetParam(), limitParam(), {Name: "worker_id", Location: v2QueryParam, Type: v2StringParam, Description: "Filter by worker slug or owner path. Example: \"demo-worker\". (optional)"}, keywordParam()}},
+		{Name: "list_worker_tasks", Method: http.MethodGet, Path: "/api/v2/worker-tasks", Auth: true, ListKey: "list", Description: publicDescription("List saved CoreClaw worker tasks for the current user.", "Use when the user wants saved tasks, scheduled presets, configured jobs, or task ids.", "JSON list of saved worker tasks.", "Follow with run_worker_task using worker_task_id."), Params: []v2ParamSpec{offsetParam(), limitParam(), {Name: "worker_id", Location: v2QueryParam, Type: v2StringParam, Description: "Filter by worker slug or owner path. Example: \"demo-worker\". (optional)"}, keywordParam()}},
 		{Name: "run_worker_task", Method: http.MethodPost, Path: "/api/v2/worker-tasks/{workerTaskId}/runs", Auth: true, Description: publicDescription("Run a saved CoreClaw worker task.", "Use when the user wants to execute a configured task rather than supply ad-hoc worker input.", "JSON with run_slug or synchronous result fields.", "Follow with get_worker_run or get_last_worker_run, then result/export tools."), Params: append([]v2ParamSpec{workerTaskIDParam()}, runBodyParams()...)},
-		{Name: "list_workers", Method: http.MethodGet, Path: "/api/v2/workers", Auth: true, Description: publicDescription("List CoreClaw workers owned by the current user.", "Use when the user wants their private/current-user workers, not the public marketplace.", "JSON with worker slug, path, title, username, and description.", "Follow with get_worker, get_worker_input_schema, run_worker, or worker-specific last-run tools."), Params: []v2ParamSpec{offsetParam(), limitParam(), keywordParam()}},
+		{Name: "list_workers", Method: http.MethodGet, Path: "/api/v2/workers", Auth: true, ListKey: "scraper", Description: publicDescription("List CoreClaw workers owned by the current user.", "Use when the user wants their private/current-user workers, not the public marketplace.", "JSON with worker slug, path, title, username, and description.", "Follow with get_worker, get_worker_input_schema, run_worker, or worker-specific last-run tools."), Params: []v2ParamSpec{offsetParam(), limitParam(), keywordParam()}},
 		{Name: "get_worker", Method: http.MethodGet, Path: "/api/v2/workers/{workerId}", Auth: true, Description: publicDescription("Get detail for a CoreClaw worker.", "Use before running a worker to inspect version, README, and parameters.", "JSON with worker name, username, version, readme, and parameters.", "Follow with get_worker_input_schema and then run_worker."), Params: []v2ParamSpec{workerIDParam()}},
 		{Name: "get_worker_input_schema", Method: http.MethodGet, Path: "/api/v2/workers/{workerId}/input-schema", Description: publicDescription("Get the public input JSON schema for a CoreClaw worker.", "Use when the user wants to know required input fields or before composing run_worker input_json.", "JSON with input_schema.", "Call before run_worker so input_json matches the worker schema."), Params: []v2ParamSpec{workerIDParam()}}, {Name: "run_worker", Method: http.MethodPost, Path: "/api/v2/workers/{workerId}/runs", Auth: true, Description: publicDescription("Run a CoreClaw worker with an ad-hoc JSON input payload.", "Use when the user wants to start, execute, scrape, crawl, or run a worker with specific input.", "JSON with run_slug for async runs or synchronous result fields for sync runs.", "Call get_worker_input_schema first, then run_worker, then get_worker_run or get_last_worker_run, then results/export/log tools."), Params: append([]v2ParamSpec{workerIDParam(), {Name: "version", Location: v2BodyParam, Type: v2StringParam, Description: "Worker script version. Example: \"latest\" or \"1.0.1\". Obtain from get_worker; default is backend latest. (optional)"}, {Name: "input_json", Location: v2BodyParam, Type: v2JSONParam, Description: "Worker business input payload as a JSON object string. Example: {\"keyword\":\"coffee\",\"limit\":10}. The MCP server sends it as input.parameters.custom, matching CoreClaw saved task payloads. Schema comes from get_worker_input_schema. Marked optional because the schema does not force it, but almost every worker requires input fields to run — omit only when the worker has no business fields. (optional)"}, {Name: "raw_input_json", Location: v2BodyParam, Type: v2JSONParam, Description: "Advanced escape hatch: full CoreClaw input object to send as input without wrapping. Example: {\"parameters\":{\"system\":{\"proxy_region\":\"US\"},\"custom\":{\"keyword\":\"coffee\"}}}. Do not combine with input_json. (optional)"}}, runBodyParams()...)},
 		{Name: "get_worker_last_run", Method: http.MethodGet, Path: "/api/v2/workers/{workerId}/runs/last", Auth: true, Description: publicDescription("Get the most recent run for a specific CoreClaw worker.", "Use when the user asks for the last run of a specific worker.", "JSON with last run details for that worker.", "Follow with worker-specific last result/export/log/rerun/abort tools."), Params: []v2ParamSpec{workerIDParam()}},
@@ -636,7 +812,7 @@ func v2ToolSpecs() []v2ToolSpec {
 		{Name: "export_worker_last_run_results", Method: http.MethodGet, Path: "/api/v2/workers/{workerId}/runs/last/export", Auth: true, Description: publicDescription("Export results from the most recent run of a specific CoreClaw worker.", "Use when the user asks to download/export the latest output for a known worker.", "JSON with a temporary download_url.", "Call after get_worker_last_run shows status succeeded."), Params: []v2ParamSpec{workerIDParam(), formatParam(), filterKeysParam()}},
 		{Name: "get_worker_last_run_log", Method: http.MethodGet, Path: "/api/v2/workers/{workerId}/runs/last/log", Auth: true, Description: publicDescription("Get logs for the most recent run of a specific CoreClaw worker.", "Use when debugging the latest run for a specific worker.", "JSON with log data.", "Call after get_worker_last_run when status or output needs explanation."), Params: []v2ParamSpec{workerIDParam()}},
 		{Name: "rerun_worker_last_run", Method: http.MethodPost, Path: "/api/v2/workers/{workerId}/runs/last/rerun", Auth: true, Description: publicDescription("Rerun the most recent run for a specific CoreClaw worker.", "Use when the user asks to retry or repeat the latest run for a known worker.", "JSON with a new run_slug or synchronous result fields.", "Follow with get_worker_last_run or list_worker_last_run_results."), Params: append([]v2ParamSpec{workerIDParam()}, runBodyParams()...)},
-		{Name: "list_worker_last_run_results", Method: http.MethodGet, Path: "/api/v2/workers/{workerId}/runs/last/result", Auth: true, Description: publicDescription("List paginated results from the most recent run of a specific CoreClaw worker.", "Use when the user wants latest output rows for a known worker.", "JSON with result rows and pagination metadata.", "Call after get_worker_last_run shows status succeeded; use export_worker_last_run_results for large output."), Params: []v2ParamSpec{workerIDParam(), offsetParam(), limitParam()}},
+		{Name: "list_worker_last_run_results", Method: http.MethodGet, Path: "/api/v2/workers/{workerId}/runs/last/result", Auth: true, ListKey: "list", Description: publicDescription("List paginated results from the most recent run of a specific CoreClaw worker.", "Use when the user wants latest output rows for a known worker.", "JSON with result rows and pagination metadata.", "Call after get_worker_last_run shows status succeeded; use export_worker_last_run_results for large output."), Params: []v2ParamSpec{workerIDParam(), offsetParam(), limitParam()}},
 	})
 }
 

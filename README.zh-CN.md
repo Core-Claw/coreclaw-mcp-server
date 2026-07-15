@@ -38,6 +38,12 @@ https://mcp.coreclaw.com/mcp
 - Server instructions：在 MCP `initialize` 响应中返回中英文工作流指引
 - Tool annotations：每个工具都显式声明 `title`、`readOnlyHint`、`destructiveHint`、`idempotentHint`、`openWorldHint`
 
+## 分页补偿
+
+CoreClaw 的列表接口（`list_store_workers`、`list_workers`、`list_worker_runs`、`list_worker_tasks` 及各 `list_*_results` 工具）**不**把 `offset` 当作绝对行偏移。后端把 `(offset, limit)` 转成 1 基分页（`page_index = floor(offset/limit) + 1`），因此 `offset=80, limit=100` 实际返回的是 `[0, 100)`，`offset=20, limit=50` 返回 `[0, 50)`。只有当 `offset` 是 `limit` 的整数倍时，`offset` 才与真实行偏移一致。
+
+本 MCP 服务器做透明补偿：当请求的 `offset` 不是 `limit` 的整数倍时，工具会向上游发起按 `limit` 对齐的分页请求，再拼出精确的 `[offset, offset+limit)` 窗口，保证调用方始终拿到所请求的行。对齐的请求（含默认 `offset=0`）只走单次上游往返。调用方无需修改分页逻辑——任意 `offset`/`limit` 组合都能返回正确切片。这是对上游后端 bug 的客户端侧规避，已由单元测试与真机 API 回归测试覆盖。
+
 ## 构建和测试
 
 ```bash

@@ -142,6 +142,39 @@ func TestV2ToolsExposeExplicitMCPAnnotations(t *testing.T) {
 	}
 }
 
+// TestV2ListToolsCarryListKey asserts every GET tool that exposes offset+limit
+// pagination also sets ListKey, so the transparent pagination-compensation
+// layer is wired for it. A list tool missing ListKey would silently return
+// wrong rows for unaligned offsets (the upstream pagination bug).
+func TestV2ListToolsCarryListKey(t *testing.T) {
+	expected := map[string]string{
+		"list_store_workers":           "scraper",
+		"list_workers":                 "scraper",
+		"list_worker_runs":             "list",
+		"list_worker_tasks":            "list",
+		"list_worker_run_results":      "list",
+		"list_last_worker_run_results": "list",
+		"list_worker_last_run_results": "list",
+	}
+	specs := v2ToolSpecs()
+	for _, spec := range specs {
+		want, isList := expected[spec.Name]
+		if isList {
+			if spec.ListKey == "" {
+				t.Fatalf("list tool %s must set ListKey for pagination compensation", spec.Name)
+			}
+			if spec.ListKey != want {
+				t.Fatalf("list tool %s has ListKey %q, want %q", spec.Name, spec.ListKey, want)
+			}
+			continue
+		}
+		// Non-list tools must not set ListKey.
+		if spec.ListKey != "" {
+			t.Fatalf("non-list tool %s must not set ListKey (got %q)", spec.Name, spec.ListKey)
+		}
+	}
+}
+
 func TestV2ToolUsesGETPathQueryAndBearerAuth(t *testing.T) {
 	var got struct {
 		Method        string
@@ -165,12 +198,14 @@ func TestV2ToolUsesGETPathQueryAndBearerAuth(t *testing.T) {
 
 	client := NewCoreClawClient("", upstream.URL)
 	spec := mustV2ToolSpec(t, "list_worker_run_results")
+	// Use an aligned (offset, limit) so the pagination-compensation layer stays
+	// inactive and this test asserts raw path/query/bearer pass-through.
 	result, err := spec.Handler(client)(WithAPIKey(context.Background(), "user-token"), mcp.CallToolRequest{
 		Params: mcp.CallToolParams{
 			Arguments: map[string]any{
 				"run_id": "run/abc 123",
-				"offset": 7,
-				"limit":  33,
+				"offset": 10,
+				"limit":  10,
 			},
 		},
 	})
@@ -187,7 +222,7 @@ func TestV2ToolUsesGETPathQueryAndBearerAuth(t *testing.T) {
 	if got.EscapedPath != "/api/v2/worker-runs/run%2Fabc%20123/result" {
 		t.Fatalf("unexpected escaped path: %s (decoded path: %s)", got.EscapedPath, got.Path)
 	}
-	if got.Query.Get("offset") != "7" || got.Query.Get("limit") != "33" {
+	if got.Query.Get("offset") != "10" || got.Query.Get("limit") != "10" {
 		t.Fatalf("unexpected query: %s", got.Query.Encode())
 	}
 	if got.Authorization != "Bearer user-token" {
