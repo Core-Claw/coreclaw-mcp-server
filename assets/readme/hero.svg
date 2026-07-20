@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="390" viewBox="0 0 1200 390" role="img" aria-labelledby="title desc">
+  <title id="title">CoreClaw MCP Server</title>
+  <desc id="desc">Expose the CoreClaw OpenAPI v2 surface to MCP clients over stdio and Streamable HTTP.</desc>
+  <defs>
+    <pattern id="grid" width="44" height="44" patternUnits="userSpaceOnUse">
+      <path d="M44 0H0V44" fill="none" stroke="#F7F2E8" stroke-opacity=".055"/>
+    </pattern>
+    <linearGradient id="mint" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#74E0C1"/><stop offset="1" stop-color="#43B9B0"/>
+    </linearGradient>
+    <clipPath id="frame"><rect width="1200" height="390" rx="32"/></clipPath>
+  </defs>
+  <g clip-path="url(#frame)">
+    <rect width="1200" height="390" rx="32" fill="#121827"/>
+    <rect width="1200" height="390" rx="32" fill="url(#grid)"/>
+    <circle cx="1107" cy="56" r="112" fill="#FF7458" fill-opacity=".08"/>
+    <circle cx="1048" cy="340" r="138" fill="#63D3BE" fill-opacity=".06"/>
+
+    <g transform="translate(68 48)" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif">
+      <text x="0" y="16" fill="#A9B1C2" font-size="17" font-weight="700" letter-spacing="3">MCP SERVER · CORECLAW API V2</text>
+      <rect x="0" y="34" width="56" height="6" rx="3" fill="#FF7458"/>
+      <text x="0" y="132" fill="#F7F2E8" font-size="76" font-weight="780" letter-spacing="-3">coreclaw</text>
+      <text x="0" y="206" fill="#F7F2E8" font-size="70" font-weight="760" letter-spacing="-3">mcp server</text>
+      <rect id="title-highlight" x="0" y="224" width="310" height="18" rx="4" fill="#63D3BE" fill-opacity=".82"/>
+      <text x="0" y="278" fill="#D6DCE7" font-size="26" font-weight="520">37 v2 operations, to any MCP client.</text>
+      <text x="0" y="322" fill="#7F8A9F" font-size="15" font-weight="650" letter-spacing="1.7">STDIO · STREAMABLE HTTP · CLAUDE · CURSOR · N8N</text>
+    </g>
+
+    <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif">
+      <g transform="translate(790 46) rotate(5 145 92)">
+        <rect x="8" y="10" width="292" height="184" rx="20" fill="#080D17" fill-opacity=".38"/>
+        <rect width="292" height="184" rx="20" fill="#F7F2E8"/>
+        <rect x="22" y="22" width="56" height="8" rx="4" fill="#FF7458"/>
+        <text x="22" y="58" fill="#121827" font-size="18" font-weight="760">MCP CLIENT</text>
+        <rect x="22" y="78" width="248" height="82" rx="12" fill="#182334"/>
+        <circle cx="40" cy="95" r="3" fill="#63D3BE"/>
+        <path d="M54 95h84M40 116h145M40 137h105" stroke="#AFC3C7" stroke-width="6" stroke-linecap="round" opacity=".8"/>
+        <text x="158" y="143" fill="#7F8A9F" font-size="13" font-weight="650">initialize → tools/list</text>
+      </g>
+      <g transform="translate(706 176) rotate(-6 145 82)">
+        <rect x="8" y="10" width="292" height="164" rx="20" fill="#080D17" fill-opacity=".4"/>
+        <rect width="292" height="164" rx="20" fill="url(#mint)"/>
+        <text x="22" y="42" fill="#10313A" font-size="16" font-weight="760">37 TOOLS · V2</text>
+        <g transform="translate(26 58)" font-size="13" font-weight="700">
+          <rect width="120" height="28" rx="8" fill="#10313A" fill-opacity=".12"/><text x="12" y="19" fill="#10313A">run_worker</text>
+          <rect x="132" width="120" height="28" rx="8" fill="#10313A" fill-opacity=".12"/><text x="144" y="19" fill="#10313A">get_worker_run</text>
+          <rect y="40" width="120" height="28" rx="8" fill="#10313A" fill-opacity=".12"/><text x="12" y="59" fill="#10313A">export_results</text>
+          <rect x="132" y="40" width="120" height="28" rx="8" fill="#10313A" fill-opacity=".12"/><text x="144" y="59" fill="#10313A">poll_run ✦</text>
+        </g>
+      </g>
+      <g transform="translate(898 235) rotate(7 122 66)">
+        <rect x="7" y="9" width="244" height="132" rx="18" fill="#080D17" fill-opacity=".4"/>
+        <rect width="244" height="132" rx="18" fill="#6A62D9"/>
+        <text x="20" y="40" fill="#F7F2E8" font-size="15" font-weight="760">CORECLAW V2</text>
+        <text x="20" y="70" fill="#F7F2E8" fill-opacity=".7" font-size="12">openapi.coreclaw.com</text>
+        <path d="M20 86h204" stroke="#F7F2E8" stroke-opacity=".25" stroke-width="2"/>
+        <text x="20" y="108" fill="#F7F2E8" font-size="13" font-weight="700">/api/v2 · Bearer</text>
+        <circle cx="200" cy="100" r="9" fill="#63D3BE"/>
+      </g>
+    </g>
+  </g>
+</svg>

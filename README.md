@@ -1,6 +1,12 @@
-# CoreClaw MCP Server
+<p align="center">
+  <img src="./assets/readme/hero.svg" width="100%" alt="CoreClaw MCP Server: 37 CoreClaw OpenAPI v2 operations exposed to any MCP client over stdio and Streamable HTTP.">
+</p>
 
 CoreClaw MCP Server exposes the public CoreClaw OpenAPI v2 surface to MCP clients such as Codex, Claude Desktop, Cursor, n8n, and any client that supports stdio or Streamable HTTP MCP.
+
+<p align="center">
+  <img src="./assets/readme/section-connect.svg" width="100%" alt="02 Connect any MCP client over the hosted Streamable HTTP endpoint or local stdio.">
+</p>
 
 ## Hosted Endpoint
 
@@ -28,6 +34,10 @@ Use this config when the hosted deployment has been updated to this repository v
 The server accepts `api-key`, `X-API-Key`, or `Authorization: Bearer <token>` from MCP clients and forwards CoreClaw API auth upstream as `Authorization: Bearer <token>`.
 
 ## Scope
+
+<p align="center">
+  <img src="./assets/readme/section-scope.svg" width="100%" alt="01 What the server exposes: 34 OpenAPI operations plus 3 orchestration tools.">
+</p>
 
 - API source of truth: `exported-api-docs/openapi.json` and `exported-api-docs/endpoints.csv`
 - Public v2 operations exposed as MCP tools: 37 (34 OpenAPI operations + 3 orchestration tools: `poll_run`, `verify_run`, `run_workers_batch`; `get_worker_run_log` adds an optional in-process `grep` filter)
@@ -216,3 +226,9 @@ Recommended GitHub Secrets:
 - `CORECLAW_BASE_URL` (optional, defaults to `https://openapi.coreclaw.com`)
 
 Do not commit `.env`, API tokens, or server passwords.
+
+---
+
+<p align="center">
+  <img src="./assets/readme/signature.svg" width="100%" alt="README made with beautify-github-readme">
+</p>
