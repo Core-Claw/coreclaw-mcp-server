@@ -103,15 +103,15 @@ Write-Host "[verify] base url: $BaseUrl"
 
 Write-Host "[verify] public GET endpoints"
 Invoke-CoreClaw GET "/api/v2/proxy/region" @{ language = "en" } | Out-Null
-$store = Invoke-CoreClaw GET "/api/v2/store" @{ offset = 0; limit = 5; keyword = "" }
+$store = Invoke-CoreClaw GET "/api/v2/store" @{ offset = 1; limit = 5; keyword = "" }
 
 if (-not [string]::IsNullOrWhiteSpace($ApiToken)) {
   Write-Host "[verify] authenticated GET endpoints"
   Invoke-CoreClaw GET "/api/v2/users/account" @{} $null $true | Out-Null
-  Invoke-CoreClaw GET "/api/v2/worker-runs" @{ offset = 0; limit = 5 } $null $true | Out-Null
+  Invoke-CoreClaw GET "/api/v2/worker-runs" @{ offset = 1; limit = 5 } $null $true | Out-Null
   Invoke-CoreClaw GET "/api/v2/worker-runs/last" @{} $null $true | Out-Null
-  Invoke-CoreClaw GET "/api/v2/worker-tasks" @{ offset = 0; limit = 5 } $null $true | Out-Null
-  Invoke-CoreClaw GET "/api/v2/workers" @{ offset = 0; limit = 5 } $null $true | Out-Null
+  Invoke-CoreClaw GET "/api/v2/worker-tasks" @{ offset = 1; limit = 5 } $null $true | Out-Null
+  Invoke-CoreClaw GET "/api/v2/workers" @{ offset = 1; limit = 5 } $null $true | Out-Null
 } else {
   Write-Host "[verify] CORECLAW_API_KEY not set; skipping authenticated upstream checks"
 }
@@ -135,22 +135,24 @@ try {
   Assert-ToolCount $listText
 
   Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/mcp/list_proxy_regions" -ContentType "application/json" -Body '{"language":"en"}' | Out-Null
-  Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/mcp/list_store_workers" -ContentType "application/json" -Body '{"offset":0,"limit":2}' | Out-Null
+  Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/mcp/list_store_workers" -ContentType "application/json" -Body '{"offset":1,"limit":2}' | Out-Null
 
-  # Pagination-compensation regression check: offset=80, limit=100 hits the
-  # upstream pagination bug (limit==100 with 0<offset<100 returns page 0).
-  # The MCP layer must transparently compensate and return rows [80, end),
-  # NOT the same first 100 rows as offset=0.
-  $page0 = (Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/mcp/list_store_workers" -ContentType "application/json" -Body '{"offset":0,"limit":100}').scraper
-  $page80 = (Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/mcp/list_store_workers" -ContentType "application/json" -Body '{"offset":80,"limit":100}').scraper
-  if ($page0[0].slug -eq $page80[0].slug) {
-    throw "list_store_workers offset=80 returned the same first row as offset=0 ($($page0[0].slug)); pagination compensation regressed."
+  # 1-based pagination check: offset=1 returns page 1, offset=2 returns page 2,
+  # and the two pages must differ (not the same rows). Out-of-range offset
+  # returns an empty list.
+  $page1 = (Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/mcp/list_store_workers" -ContentType "application/json" -Body '{"offset":1,"limit":20}').scraper
+  $page2 = (Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/mcp/list_store_workers" -ContentType "application/json" -Body '{"offset":2,"limit":20}').scraper
+  if ($page1.Count -eq 0) {
+    throw "list_store_workers offset=1 returned 0 rows; store endpoint has no data to verify pagination."
   }
-  $page80GroundTruth = (Invoke-RestMethod -Method Get -Uri "$BaseUrl/api/v2/store?offset=80&limit=20" -Headers @{ "Authorization" = "Bearer $ApiToken" }).data.scraper
-  if ($page80[0].slug -ne $page80GroundTruth[0].slug) {
-    throw "list_store_workers offset=80 first slug $($page80[0].slug) != ground-truth $($page80GroundTruth[0].slug)"
+  if ($page1[0].slug -eq $page2[0].slug) {
+    throw "list_store_workers offset=1 and offset=2 returned the same first slug ($($page1[0].slug)); 1-based pagination is broken."
   }
-  Write-Host "[verify] list_store_workers pagination compensation OK (offset=80 limit=100 returns $($page80.Count) rows starting at $($page80[0].slug))"
+  $page1GroundTruth = (Invoke-RestMethod -Method Get -Uri "$BaseUrl/api/v2/store?offset=1&limit=20" -Headers @{ "Authorization" = "Bearer $ApiToken" }).data.scraper
+  if ($page1[0].slug -ne $page1GroundTruth[0].slug) {
+    throw "list_store_workers offset=1 first slug $($page1[0].slug) != ground-truth $($page1GroundTruth[0].slug)"
+  }
+  Write-Host "[verify] list_store_workers 1-based pagination OK (page1=$($page1[0].slug), page2=$($page2[0].slug))"
 
   if (-not [string]::IsNullOrWhiteSpace($ApiToken)) {
     Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/mcp/get_account_info" -Headers @{ "api-key" = $ApiToken } -ContentType "application/json" -Body '{}' | Out-Null

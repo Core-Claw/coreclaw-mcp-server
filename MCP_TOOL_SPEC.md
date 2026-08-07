@@ -112,11 +112,9 @@ Custom-handler tools still set `Method`/`Path`/`Auth`/`Params` so `Tool()` gener
 
 `verify_run` codifies the "real data" acceptance standard: `code==0` + `run_status==succeeded` + `data.count>0` + the first row carries at least one non-empty non-diagnostic field. Rows whose only populated fields are diagnostic markers (`error`, `status`, `error_code`, `__coreclaw_data_id__`, etc.) or weak fields alone (`url`) are judged `ERROR_RECORD`, not `PASS` — this prevents a common false-PASS trap where a CAPTCHA/403 row populates the list but carries no payload.
 
-## Pagination Compensation
+## Pagination
 
-CoreClaw list endpoints interpret `(offset, limit)` as 1-indexed paging (`page_index = floor(offset/limit) + 1`), not as an absolute row offset. A request whose `offset` is not a multiple of `limit` therefore returns the wrong window upstream.
-
-Every paginated GET list tool sets `ListKey` (`scraper` for store/workers, `list` for worker-runs/worker-tasks/results). When `offset % limit != 0`, the handler transparently walks aligned upstream pages and stitches the exact `[offset, offset+limit)` window. Aligned requests (including `offset=0`) issue a single upstream call. `TestV2ListToolsCarryListKey` enforces that list tools set `ListKey` and non-list tools do not.
+CoreClaw list endpoints use **1-based page numbering**: `offset` is the page number, not a row skip count. `offset=1` returns page 1, `offset=2` returns page 2, and `offset=0` is accepted as page 1 (compat). `limit` is the page size (max 100). Out-of-range `offset` returns an empty list. The MCP layer passes `offset`/`limit` straight through to the upstream in a single GET — no client-side stitching.
 
 ## Verification
 

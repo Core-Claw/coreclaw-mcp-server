@@ -148,7 +148,7 @@ func verifyRunByID(ctx context.Context, client *CoreClawClient, runID string, sn
 		return verifyResult{verdict: verdictFailed}
 	}
 	q := url.Values{}
-	q.Set("offset", "0")
+	q.Set("offset", "1")
 	q.Set("limit", strconv.Itoa(sniffLimit))
 	resData, err := client.doGetAuth(ctx, runStatusPath(runID)+"/result", q)
 	if err != nil {
@@ -193,7 +193,7 @@ func verifyRunHandler(client *CoreClawClient) server.ToolHandlerFunc {
 		}
 
 		q := url.Values{}
-		q.Set("offset", "0")
+		q.Set("offset", "1")
 		q.Set("limit", strconv.Itoa(sniffLimit))
 		resData, gerr := client.doGetAuth(ctx, runStatusPath(runID)+"/result", q)
 		if gerr != nil {

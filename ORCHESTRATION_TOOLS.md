@@ -6,7 +6,7 @@
 
 ## Context
 
-A full-store acceptance run (117 public CoreClaw workers, results in `D:\Coreclaw_Work\all-workers\reports\`) exposed four pain points where the MCP server lagged behind raw API calls. The upstream pagination bug was already fixed in commit `0d22581`; this change closes the remaining gaps so MCP matches raw API for acceptance/diagnosis workflows and is safer (the judgment is codified, not reimplemented per caller).
+A full-store acceptance run (117 public CoreClaw workers, results in `D:\Coreclaw_Work\all-workers\reports\`) exposed four pain points where the MCP server lagged behind raw API calls. This change closes the remaining gaps so MCP matches raw API for acceptance/diagnosis workflows and is safer (the judgment is codified, not reimplemented per caller).
 
 | Pain point | Solution |
 |---|---|
@@ -35,7 +35,7 @@ Polls `GET /api/v2/worker-runs/{runId}` until terminal (succeeded/failed/aborted
 
 - Params: `run_id` (required), `timeout_seconds` (default 300, 1–900), `poll_interval_seconds` (default 5, 1–60), `limit` (result preview, default 10, 0–100).
 - `context.WithTimeout(ctx, timeoutSeconds)` bounds the total poll. Each `doGetAuth` failure first checks `pollCtx.Err()`: if the context expired, return the `timed_out` result instead of a tool error (so a slow upstream doesn't surface as a hard failure).
-- On `succeeded` with `limit>0`, pre-fetches `/result?offset=0&limit=N` (offset=0 is aligned → single upstream request) and returns `result_count` + first-row sample field names.
+- On `succeeded` with `limit>0`, pre-fetches `/result?offset=1&limit=N` (page 1 under 1-based numbering) and returns `result_count` + first-row sample field names.
 - Return: `{run_id, status, err_msg, poll_count, elapsed_ms, terminal, [timed_out], [result_count], [sample_fields]}`. On timeout: `terminal:false, timed_out:true` + a "call poll_run again" message.
 
 Shared helpers in `poll_run.go` (reused by the other three tools): `jsonResult`, `readIntParamDefault`, `isTerminalStatus`, `parseRunStatus`, `runStatusPath`, `fetchResultPreview`, `pollTimeoutResult`, `pollUntilTerminal`.

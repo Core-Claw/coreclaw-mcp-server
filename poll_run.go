@@ -84,12 +84,12 @@ type resultPreview struct {
 	sampleFields []string
 }
 
-// fetchResultPreview fetches /result?offset=0&limit=N for a run and returns
-// the total count plus the non-empty field names of the first row. offset=0 is
-// aligned so pagination compensation stays a single upstream request.
+// fetchResultPreview fetches /result?offset=1&limit=N for a run and returns
+// the total count plus the non-empty field names of the first row. offset=1 is
+// page 1 under CoreClaw's 1-based page numbering.
 func fetchResultPreview(ctx context.Context, client *CoreClawClient, runID string, limit int) (resultPreview, error) {
 	q := url.Values{}
-	q.Set("offset", "0")
+	q.Set("offset", "1")
 	q.Set("limit", strconv.Itoa(limit))
 	data, err := client.doGetAuth(ctx, runStatusPath(runID)+"/result", q)
 	if err != nil {

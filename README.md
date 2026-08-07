@@ -48,11 +48,9 @@ The server accepts `api-key`, `X-API-Key`, or `Authorization: Bearer <token>` fr
 - Server instructions: returned during MCP `initialize` with the recommended CoreClaw workflow in English and Chinese
 - Tool annotations: every tool exposes explicit `title`, `readOnlyHint`, `destructiveHint`, `idempotentHint`, and `openWorldHint`
 
-## Pagination Compensation
+## Pagination
 
-CoreClaw's list endpoints (`list_store_workers`, `list_workers`, `list_worker_runs`, `list_worker_tasks`, and the `list_*_results` tools) do **not** honour `offset` as an absolute row offset. The backend converts `(offset, limit)` into a 1-indexed page (`page_index = floor(offset/limit) + 1`), so a request for `offset=80, limit=100` actually returns rows `[0, 100)` and `offset=20, limit=50` returns `[0, 50)`. Only when `offset` is an exact multiple of `limit` does it coincide with the real row offset.
-
-This MCP server transparently compensates: when a request's `offset` is not a multiple of `limit`, the tool walks aligned upstream pages and stitches the exact `[offset, offset+limit)` window so callers always receive the rows they asked for. Aligned requests (including the default `offset=0`) take a single upstream round-trip. Callers do not need to change their paging logic — any `offset`/`limit` combination now returns the correct slice. This is a client-side workaround for an upstream backend bug and is covered by unit and live-API regression tests.
+CoreClaw's list endpoints (`list_store_workers`, `list_workers`, `list_worker_runs`, `list_worker_tasks`, and the `list_*_results` tools) use **1-based page numbering**. `offset` is the page number, not a row skip count: `offset=1` returns page 1, `offset=2` returns page 2, and `offset=0` is accepted as page 1 (compat). `limit` is the page size (max 100). Out-of-range `offset` returns an empty list. The MCP layer passes `offset`/`limit` straight through to the upstream in a single GET — callers page by incrementing `offset` by 1.
 
 ## Build And Test
 
