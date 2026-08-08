@@ -24,6 +24,7 @@ var coreClawErrors = map[int]string{
 	14000: "Database error: please retry later",
 	16000: "Not implemented",
 	30001: "Insufficient account balance",
+	30003: "Plan concurrency limit reached: wait for existing tasks to complete",
 	50001: "Worker not found",
 	50002: "Worker run failed",
 	50003: "Worker version not available",

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/readme/hero.svg" width="100%" alt="CoreClaw MCP Server: 37 CoreClaw OpenAPI v2 operations exposed to any MCP client over stdio and Streamable HTTP.">
+  <img src="./assets/readme/hero.svg" width="100%" alt="CoreClaw MCP Server: 42 CoreClaw OpenAPI v2 tools exposed to any MCP client over stdio and Streamable HTTP.">
 </p>
 
 CoreClaw MCP Server exposes the public CoreClaw OpenAPI v2 surface to MCP clients such as Codex, Claude Desktop, Cursor, n8n, and any client that supports stdio or Streamable HTTP MCP.
@@ -36,12 +36,12 @@ The server accepts `api-key`, `X-API-Key`, or `Authorization: Bearer <token>` fr
 ## Scope
 
 <p align="center">
-  <img src="./assets/readme/section-scope.svg" width="100%" alt="01 What the server exposes: 34 OpenAPI operations plus 3 orchestration tools.">
+  <img src="./assets/readme/section-scope.svg" width="100%" alt="01 What the server exposes: 39 OpenAPI operations plus 3 orchestration tools.">
 </p>
 
 - API source of truth: `exported-api-docs/openapi.json` and `exported-api-docs/endpoints.csv`
-- Public v2 operations exposed as MCP tools: 37 (34 OpenAPI operations + 3 orchestration tools: `poll_run`, `verify_run`, `run_workers_batch`; `get_worker_run_log` adds an optional in-process `grep` filter)
-- Excluded internal operations: `POST /api/v2/workers/{workerId}/versions`, `PUT /api/v2/workers/{workerId}/versions/{version}`, `GET /api/v2/workers/{workerId}/internal`
+- Public v2 operations exposed as MCP tools: 42 (39 OpenAPI operations + 3 orchestration tools: `poll_run`, `verify_run`, `run_workers_batch`; `get_worker_run_log` adds an optional in-process `grep` filter)
+- Excluded internal operations: `POST /api/v2/workers/{workerId}/versions`, `PUT /api/v2/workers/{workerId}/versions/{version}`, `GET /api/v2/workers/{workerId}/internal`, `GET /api/v2/queued-worker-runs`
 - Transports: stdio and Streamable HTTP
 - REST compatibility shim: `POST /mcp/<tool_name>`
 - Auth: incoming `api-key`, `X-API-Key`, or `Authorization: Bearer <token>` is forwarded to CoreClaw as `Authorization: Bearer <token>`
@@ -50,7 +50,9 @@ The server accepts `api-key`, `X-API-Key`, or `Authorization: Bearer <token>` fr
 
 ## Pagination
 
-CoreClaw's list endpoints (`list_store_workers`, `list_workers`, `list_worker_runs`, `list_worker_tasks`, and the `list_*_results` tools) use **1-based page numbering**. `offset` is the page number, not a row skip count: `offset=1` returns page 1, `offset=2` returns page 2, and `offset=0` is accepted as page 1 (compat). `limit` is the page size (max 100). Out-of-range `offset` returns an empty list. The MCP layer passes `offset`/`limit` straight through to the upstream in a single GET — callers page by incrementing `offset` by 1.
+CoreClaw's list endpoints (`list_store_workers`, `list_workers`, `list_worker_runs`, `list_worker_tasks`, `list_run_queue_items`, and the `list_*_results` tools) use **1-based page numbering**. `offset` is the page number, not a row skip count: `offset=1` returns page 1, `offset=2` returns page 2, and `offset=0` is accepted as page 1 (compat). `limit` is the page size (max 100). Out-of-range `offset` returns an empty list. The MCP layer passes `offset`/`limit` straight through to the upstream in a single GET — callers page by incrementing `offset` by 1.
+
+`list_worker_runs` also accepts optional `start_time`/`end_time` query parameters (Unix seconds) to filter by `created_at`. Both must be provided together and must fall in the same calendar month; without them, only the current month's runs are returned.
 
 ## Build And Test
 
@@ -117,6 +119,11 @@ Tools are registered in the same order a model should normally use them: discove
 | `run_worker` | `POST /api/v2/workers/{workerId}/runs` |
 | `run_worker_task` | `POST /api/v2/worker-tasks/{workerTaskId}/runs` |
 | `run_workers_batch` | orchestration: per-item `POST /api/v2/workers/{workerId}/runs` + polling |
+| `queue_worker_run` | `POST /api/v2/workers/{workerId}/queued-runs` |
+| `list_run_queue_items` | `GET /api/v2/run-queue/items` |
+| `activate_run_queue_items` | `POST /api/v2/run-queue/items/activate` |
+| `release_run_queue_items` | `POST /api/v2/run-queue/items/release` |
+| `release_run_queue_item` | `POST /api/v2/run-queue/items/{queueId}/release` |
 | `list_worker_runs` | `GET /api/v2/worker-runs` |
 | `get_last_worker_run` | `GET /api/v2/worker-runs/last` |
 | `get_worker_run` | `GET /api/v2/worker-runs/{runId}` |
@@ -192,7 +199,7 @@ Local HTTP:
 ```bash
 curl -X POST http://localhost:3000/mcp/list_store_workers \
   -H "Content-Type: application/json" \
-  -d '{"keyword":"amazon","offset":0,"limit":5}'
+  -d '{"keyword":"amazon","offset":1,"limit":5}'
 
 curl -X POST http://localhost:3000/mcp/get_account_info \
   -H "Content-Type: application/json" \
@@ -205,7 +212,7 @@ curl -X POST http://localhost:3000/mcp/run_worker \
   -d '{"worker_id":"YOUR_WORKER_ID","version":"v1.0.1","input_json":"{\"keyword\":\"coffee\",\"limit\":10}","is_async":true}'
 ```
 
-For `run_worker`, `create_worker_task`, and `update_worker_task_input`, pass business fields from `get_worker_input_schema` as `input_json`. The MCP server wraps that object as `input.parameters.custom` for CoreClaw. Advanced callers can pass a complete CoreClaw `input` object with `raw_input_json` instead (run_worker only).
+For `run_worker`, `queue_worker_run`, `create_worker_task`, and `update_worker_task_input`, pass business fields from `get_worker_input_schema` as `input_json`. The MCP server wraps that object as `input.parameters.custom` for CoreClaw. Advanced callers can pass a complete CoreClaw `input` object with `raw_input_json` instead (`run_worker` and `queue_worker_run` only).
 
 ## GitHub Deployment
 

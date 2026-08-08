@@ -4,14 +4,15 @@ This project exposes CoreClaw OpenAPI v2 as MCP tools. The source of truth is th
 
 ## Coverage Contract
 
-- Total OpenAPI v2 operations: 34
-- Public MCP tools: 37
+- Total OpenAPI v2 operations: 39
+- Public MCP tools: 42
 - Excluded operations:
   - `POST /api/v2/workers/{workerId}/versions`
   - `PUT /api/v2/workers/{workerId}/versions/{version}`
   - `GET /api/v2/workers/{workerId}/internal`
+  - `GET /api/v2/queued-worker-runs`
 
-Every non-excluded operation must have exactly one MCP tool and one REST shim route at `/mcp/<tool_name>`. The 3 additional tools beyond the 34 OpenAPI operations are orchestration tools with custom handlers (not 1:1 with any single upstream operation): `poll_run` (repeated `get_worker_run` until terminal), `verify_run` (`get_worker_run` + `list_worker_run_results` plus in-process verdict), and `run_workers_batch` (per-item `run_worker` + polling). `get_worker_run_log` remains 1:1 with its OpenAPI operation but adds an in-process `grep` filter parameter; when `grep` is unset it returns the raw upstream payload unchanged.
+Every non-excluded operation must have exactly one MCP tool and one REST shim route at `/mcp/<tool_name>`. The 3 additional tools beyond the 39 OpenAPI operations are orchestration tools with custom handlers (not 1:1 with any single upstream operation): `poll_run` (repeated `get_worker_run` until terminal), `verify_run` (`get_worker_run` + `list_worker_run_results` plus in-process verdict), and `run_workers_batch` (per-item `run_worker` + polling). `get_worker_run_log` remains 1:1 with its OpenAPI operation but adds an in-process `grep` filter parameter; when `grep` is unset it returns the raw upstream payload unchanged.
 
 Three operations are intentionally public (`Auth: false`) and match the upstream OpenAPI `security: []` marking: `GET /api/v2/proxy/region`, `GET /api/v2/store`, and `GET /api/v2/workers/{workerId}/input-schema`. All other operations require a CoreClaw token. Do not mark non-public operations as `Auth: false` to "help" callers — it would let unauthenticated MCP requests reach the tool and fail upstream instead of being rejected at the auth layer.
 
@@ -53,7 +54,7 @@ Tool names should mirror the endpoint intent:
 Register and expose tools in the order a model should normally use them:
 
 1. Discovery and preflight: proxy regions, public store workers, private workers, worker detail, worker input schema, saved tasks, account info.
-2. Execution: ad-hoc worker runs and saved task runs, plus `run_workers_batch` for bulk execution.
+2. Execution: ad-hoc worker runs and saved task runs, plus `run_workers_batch` for bulk execution; queued execution uses `queue_worker_run`, then `list_run_queue_items` and activate/release controls.
 3. Run lookup: list runs, last run, specific run, worker-specific last run.
 4. Orchestration: `poll_run` to wait for completion (covers slow workers exceeding a single MCP call), `verify_run` for an acceptance verdict.
 5. Output retrieval: result rows, export links, and logs for last/specific/worker-specific runs.
@@ -96,7 +97,7 @@ Parameters must be explicit and stable:
 - Optional pagination parameters include defaults in the description.
 - Enum parameters use `mcp.Enum`.
 - Complex worker input is accepted as `input_json`, a JSON object string, because many MCP clients handle simple strings more reliably than arbitrary nested objects.
-- `run_worker`, `create_worker_task`, and `update_worker_task_input` treat `input_json` as the Worker's business/custom fields and send it upstream as `input.parameters.custom`, matching CoreClaw saved task payloads observed in the v2 docs and real API. Sending `input_json` unwrapped makes a created task un-runnable (backend rejects required custom fields). Advanced callers can send a complete upstream `input` object through `raw_input_json` (run_worker only); `input_json` and `raw_input_json` are mutually exclusive.
+- `run_worker`, `queue_worker_run`, `create_worker_task`, and `update_worker_task_input` treat `input_json` as the Worker's business/custom fields and send it upstream as `input.parameters.custom`, matching CoreClaw saved task payloads observed in the v2 docs and real API. Sending `input_json` unwrapped makes a created task un-runnable (backend rejects required custom fields). Advanced callers can send a complete upstream `input` object through `raw_input_json` (`run_worker` and `queue_worker_run` only); `input_json` and `raw_input_json` are mutually exclusive.
 
 ## Return Values
 
@@ -125,9 +126,9 @@ Required checks:
 - `go build .`
 - `scripts/verify-real-api.ps1` with `CORECLAW_API_KEY` set for authenticated checks
 - `scripts/verify-e2e-run.ps1` with `CORECLAW_API_KEY` set for a real MCP `tools/call` run, polling, logs, results, and export validation
-- Tool registry test proving 37 exposed tools and the three excluded endpoints absent
-- MCP tools/list test proving 37 tools are visible to MCP clients
-- REST handler test proving 37 `/mcp/<tool_name>` handlers
+- Tool registry test proving 42 exposed tools and the four excluded endpoints absent
+- MCP tools/list test proving 42 tools are visible to MCP clients
+- REST handler test proving 42 `/mcp/<tool_name>` handlers
 - Initialize test proving server instructions and hosted endpoint metadata are visible to MCP clients
 - Annotation test proving every MCP tool has explicit behavior hints
 - Workflow order test proving `tools/list` follows the intended discovery-to-control order

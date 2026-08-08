@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -135,12 +136,14 @@ func (c *CoreClawClient) doRequest(req *http.Request) (json.RawMessage, error) {
 		if mapped, ok := coreClawErrors[coreClawResp.Code]; coreClawResp.Code != 0 && msg == "" && ok {
 			msg = mapped
 		}
-		if coreClawResp.RequestID != "" {
-			msg += " (request_id: " + coreClawResp.RequestID + ")"
-		}
-		if len(coreClawResp.Details) > 0 {
-			msg += " details: " + strings.Join(coreClawResp.Details, "; ")
-		}
+		// The full upstream message (which may include backend details and the
+		// request id) is useful for debugging, but must not leak into the error
+		// returned to the MCP client: tool results are user-visible and model
+		// context, and details strings can carry worker-internal data.
+		log.Printf(
+			"CoreClaw API error: method=%s url=%s code=%d status=%d request_id=%q details=%q",
+			req.Method, req.URL.Path, coreClawResp.Code, resp.StatusCode, coreClawResp.RequestID, strings.Join(coreClawResp.Details, "; "),
+		)
 		if coreClawResp.Code != 0 {
 			return nil, fmt.Errorf("[%d] %s", coreClawResp.Code, msg)
 		}

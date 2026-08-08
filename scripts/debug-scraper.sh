@@ -21,7 +21,7 @@ banner "account"
 curl -sS "${BASE}/api/v2/users/account" "${auth[@]}" | pretty
 
 banner "store workers"
-curl -sS -G "${BASE}/api/v2/store" --data-urlencode "offset=0" --data-urlencode "limit=5" | pretty
+curl -sS -G "${BASE}/api/v2/store" --data-urlencode "offset=1" --data-urlencode "limit=5" | pretty
 
 if [[ -z "${WORKER_ID}" ]]; then
   banner "worker-specific checks skipped"

@@ -30,8 +30,8 @@ https://mcp.coreclaw.com/mcp
 ## 范围
 
 - API 事实来源：`exported-api-docs/openapi.json` 和 `exported-api-docs/endpoints.csv`
-- 暴露为 MCP 工具的公开 v2 operation：37 个（34 个 OpenAPI operation + 3 个编排工具：`poll_run`、`verify_run`、`run_workers_batch`；`get_worker_run_log` 另增可选的进程内 `grep` 过滤）
-- 排除的内部接口：`POST /api/v2/workers/{workerId}/versions`、`PUT /api/v2/workers/{workerId}/versions/{version}`、`GET /api/v2/workers/{workerId}/internal`
+- 暴露为 MCP 工具的公开 v2 operation：42 个（39 个 OpenAPI operation + 3 个编排工具：`poll_run`、`verify_run`、`run_workers_batch`；`get_worker_run_log` 另增可选的进程内 `grep` 过滤）
+- 排除的内部接口：`POST /api/v2/workers/{workerId}/versions`、`PUT /api/v2/workers/{workerId}/versions/{version}`、`GET /api/v2/workers/{workerId}/internal`、`GET /api/v2/queued-worker-runs`
 - 传输方式：stdio 和 Streamable HTTP
 - REST 兼容入口：`POST /mcp/<tool_name>`
 - 鉴权：入口支持 `api-key`、`X-API-Key`、`Authorization: Bearer <token>`，转发到 CoreClaw 时使用 `Authorization: Bearer <token>`
@@ -40,7 +40,9 @@ https://mcp.coreclaw.com/mcp
 
 ## 分页
 
-CoreClaw 的列表接口（`list_store_workers`、`list_workers`、`list_worker_runs`、`list_worker_tasks` 及各 `list_*_results` 工具）使用 **1 基页码**。`offset` 是页码而非行偏移：`offset=1` 返回第 1 页，`offset=2` 返回第 2 页，`offset=0` 兼容作为第 1 页。`limit` 是每页条数（上限 100）。`offset` 越界返回空列表。MCP 层将 `offset`/`limit` 原样透传给上游，单次 GET 完成——调用方翻页时 `offset` 加 1 即可。
+CoreClaw 的列表接口（`list_store_workers`、`list_workers`、`list_worker_runs`、`list_worker_tasks`、`list_run_queue_items` 及各 `list_*_results` 工具）使用 **1 基页码**。`offset` 是页码而非行偏移：`offset=1` 返回第 1 页，`offset=2` 返回第 2 页，`offset=0` 兼容作为第 1 页。`limit` 是每页条数（上限 100）。`offset` 越界返回空列表。MCP 层将 `offset`/`limit` 原样透传给上游，单次 GET 完成——调用方翻页时 `offset` 加 1 即可。
+
+`list_worker_runs` 另支持可选的 `start_time`/`end_time` 查询参数（Unix 秒）按 `created_at` 筛选。两者必须同时传入且落在同一个自然月内；不传时只返回当月运行记录。
 
 ## 构建和测试
 
@@ -87,13 +89,13 @@ HTTP 服务提供：
 
 ## MCP 工具
 
-本服务公开 37 个 v2 工具，其中 34 个与公开 endpoint 一一对应，另 3 个为编排工具（`poll_run`/`verify_run`/`run_workers_batch`，由自定义 handler 组合多个上游请求）。按模型实际使用链路排序：发现和预检、执行、查询运行、编排（轮询/验收）、读取结果/日志/导出、最后才是重跑或停止。
+本服务公开 42 个 v2 工具，其中 39 个与公开 endpoint 一一对应，另 3 个为编排工具（`poll_run`/`verify_run`/`run_workers_batch`，由自定义 handler 组合多个上游请求）。按模型实际使用链路排序：发现和预检、执行、查询运行、编排（轮询/验收）、读取结果/日志/导出、最后才是重跑或停止。
 
 1. `list_store_workers`
 2. `list_workers`
 3. `get_worker` 或 `get_worker_input_schema`
 4. `list_worker_tasks`，需要保存预设时用 `create_worker_task`，查看/修改/删除用 `get_worker_task`、`get_worker_task_input`、`update_worker_task`、`update_worker_task_input`、`delete_worker_task`
-5. `run_worker` 或 `run_worker_task`；批量验收用 `run_workers_batch`
+5. `run_worker` 或 `run_worker_task`；批量验收用 `run_workers_batch`；需要排队延迟执行用 `queue_worker_run` + `list_run_queue_items`/`activate_run_queue_items`/`release_run_queue_items`/`release_run_queue_item`
 6. `get_worker_run`、`get_last_worker_run` 或 `get_worker_last_run`；等慢脚本结束用 `poll_run`，验收是否拿到有效数据用 `verify_run`
 7. `list_worker_run_results` 或 `export_worker_run_results`
 8. 失败排查用 `get_worker_run_log`（可传 `grep` 只看 Error/Traceback 行）
@@ -152,7 +154,7 @@ HTTP 服务提供：
 ```bash
 curl -X POST http://localhost:3000/mcp/list_store_workers \
   -H "Content-Type: application/json" \
-  -d '{"keyword":"amazon","offset":0,"limit":5}'
+  -d '{"keyword":"amazon","offset":1,"limit":5}'
 
 curl -X POST http://localhost:3000/mcp/get_account_info \
   -H "Content-Type: application/json" \
@@ -165,7 +167,7 @@ curl -X POST http://localhost:3000/mcp/run_worker \
   -d '{"worker_id":"YOUR_WORKER_ID","version":"v1.0.1","input_json":"{\"keyword\":\"coffee\",\"limit\":10}","is_async":true}'
 ```
 
-`run_worker`、`create_worker_task`、`update_worker_task_input` 的 `input_json` 填从 `get_worker_input_schema` 看到的业务字段即可；MCP 服务会自动包装为 CoreClaw 实际使用的 `input.parameters.custom`。如果高级调用方要完全控制 CoreClaw 的 `input` 对象，可以改用 `raw_input_json`。
+`run_worker`、`queue_worker_run`、`create_worker_task`、`update_worker_task_input` 的 `input_json` 填从 `get_worker_input_schema` 看到的业务字段即可；MCP 服务会自动包装为 CoreClaw 实际使用的 `input.parameters.custom`。如果高级调用方要完全控制 CoreClaw 的 `input` 对象，可以改用 `raw_input_json`（仅 `run_worker` 和 `queue_worker_run`）。
 
 ## GitHub 自动化部署
 

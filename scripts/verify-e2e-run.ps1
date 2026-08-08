@@ -156,7 +156,7 @@ if (-not $DirectWorkerRun) {
   # (e.g. via $env:CORECLAW_E2E_WORKER_TASK_ID) instead of silently using a
   # foreign slug that would 404. Find one with:
   #   curl -s -H "Authorization: Bearer $CORECLAW_API_KEY" \
-  #     "$BaseUrl/api/v2/worker-tasks?offset=0&limit=1" | jq -r .data.list[0].slug
+  #     "$BaseUrl/api/v2/worker-tasks?offset=1&limit=1" | jq -r .data.list[0].slug
   if ([string]::IsNullOrWhiteSpace($WorkerTaskId)) {
     throw "WorkerTaskId is required for the task-run path. Set -WorkerTaskId or `$env:CORECLAW_E2E_WORKER_TASK_ID to a saved task slug owned by this account (obtain from GET /api/v2/worker-tasks), or use -DirectWorkerRun to exercise run_worker instead."
   }

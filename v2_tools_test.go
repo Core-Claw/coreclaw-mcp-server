@@ -17,8 +17,8 @@ import (
 
 func TestV2PublicToolRegistryMatchesOpenAPIScope(t *testing.T) {
 	specs := v2ToolSpecs()
-	if len(specs) != 37 {
-		t.Fatalf("expected 37 public v2 tools, got %d", len(specs))
+	if len(specs) != 42 {
+		t.Fatalf("expected 42 public v2 tools, got %d", len(specs))
 	}
 
 	seenNames := map[string]bool{}
@@ -47,6 +47,9 @@ func TestV2PublicToolRegistryMatchesOpenAPIScope(t *testing.T) {
 		if spec.Path == "/api/v2/workers/{workerId}/versions/{version}" {
 			t.Fatalf("update worker version endpoint must not be exposed")
 		}
+		if spec.Path == "/api/v2/queued-worker-runs" {
+			t.Fatalf("list queued worker runs endpoint must not be exposed")
+		}
 		if spec.Method == "" || spec.Path == "" {
 			t.Fatalf("tool %s must have method and path", spec.Name)
 		}
@@ -60,6 +63,11 @@ func TestV2PublicToolRegistryMatchesOpenAPIScope(t *testing.T) {
 		"list_store_workers",
 		"get_account_info",
 		"run_worker",
+		"queue_worker_run",
+		"list_run_queue_items",
+		"activate_run_queue_items",
+		"release_run_queue_items",
+		"release_run_queue_item",
 		"list_worker_runs",
 		"get_worker_run",
 		"list_worker_run_results",
@@ -91,6 +99,11 @@ func TestV2ToolWorkflowOrder(t *testing.T) {
 		"run_worker",
 		"run_worker_task",
 		"run_workers_batch",
+		"queue_worker_run",
+		"list_run_queue_items",
+		"activate_run_queue_items",
+		"release_run_queue_items",
+		"release_run_queue_item",
 		"list_worker_runs",
 		"get_last_worker_run",
 		"get_worker_run",
@@ -134,9 +147,18 @@ func TestV2ToolsExposeExplicitMCPAnnotations(t *testing.T) {
 		}
 
 		expectReadOnly := spec.Method == http.MethodGet
-		expectDestructive := spec.Method == http.MethodPost || spec.Method == http.MethodDelete
-		expectIdempotent := spec.Method == http.MethodGet || spec.Method == http.MethodPut || spec.Method == http.MethodDelete || strings.Contains(spec.Name, "abort")
-		expectOpenWorld := strings.HasPrefix(spec.Name, "run_") || strings.HasPrefix(spec.Name, "rerun_")
+		// Mirrors v2_tools.go's destructiveHint/idempotentHint — see the comments
+		// there for the reasoning (additive POSTs like run/queue/activate are not
+		// destructive; delete/release are destructive but not idempotent).
+		expectDestructive := spec.Name == "delete_worker_task" ||
+			spec.Name == "release_run_queue_items" ||
+			spec.Name == "release_run_queue_item"
+		expectIdempotent := spec.Method == http.MethodGet ||
+			spec.Method == http.MethodPut ||
+			strings.Contains(spec.Name, "abort")
+		expectOpenWorld := strings.HasPrefix(spec.Name, "run_") ||
+			strings.HasPrefix(spec.Name, "rerun_") ||
+			spec.Name == "queue_worker_run"
 
 		assertBoolPtr(t, spec.Name, "readOnlyHint", tool.Annotations.ReadOnlyHint, expectReadOnly)
 		assertBoolPtr(t, spec.Name, "destructiveHint", tool.Annotations.DestructiveHint, expectDestructive)
@@ -473,8 +495,8 @@ func TestV2ToolRejectsInvalidInputJSON(t *testing.T) {
 
 func TestRESTHandlerIncludesAllV2Tools(t *testing.T) {
 	tools := restToolHandlers(NewCoreClawClient("token", "http://127.0.0.1:1"))
-	if len(tools) != 37 {
-		t.Fatalf("expected 37 REST tool handlers, got %d", len(tools))
+	if len(tools) != 42 {
+		t.Fatalf("expected 42 REST tool handlers, got %d", len(tools))
 	}
 	if _, ok := tools["get_worker_internal"]; ok {
 		t.Fatalf("internal endpoint must not have a REST handler")
@@ -484,6 +506,9 @@ func TestRESTHandlerIncludesAllV2Tools(t *testing.T) {
 	}
 	if _, ok := tools["update_worker_version"]; ok {
 		t.Fatalf("update worker version endpoint must not have a REST handler")
+	}
+	if _, ok := tools["list_queued_worker_runs"]; ok {
+		t.Fatalf("list queued worker runs endpoint must not have a REST handler")
 	}
 }
 
@@ -526,8 +551,8 @@ func TestMCPServerListsAllV2Tools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list tools: %v", err)
 	}
-	if len(tools.Tools) != 37 {
-		t.Fatalf("expected 37 listed MCP tools, got %d", len(tools.Tools))
+	if len(tools.Tools) != 42 {
+		t.Fatalf("expected 42 listed MCP tools, got %d", len(tools.Tools))
 	}
 
 	found := map[string]bool{}
@@ -572,6 +597,142 @@ func TestDocumentationTreatsHostedEndpointAsFirstClassEntry(t *testing.T) {
 	assertContains(t, exampleConfig, "https://mcp.coreclaw.com/mcp")
 	if strings.Contains(exampleConfig, "https://your-server.example.com/mcp") {
 		t.Fatalf("codex-mcp.example.json should make the hosted endpoint the first-class remote target")
+	}
+}
+
+func TestListWorkerRunsPassesStartTimeAndEndTime(t *testing.T) {
+	var got url.Values
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.Query()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"count":0,"list":[]}}`))
+	}))
+	defer upstream.Close()
+
+	client := NewCoreClawClient("token", upstream.URL)
+	spec := mustV2ToolSpec(t, "list_worker_runs")
+	result, err := spec.Handler(client)(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Arguments: map[string]any{
+				"offset":     1,
+				"limit":      20,
+				"start_time": 1696118400,
+				"end_time":   1698710400,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("expected success result, got %+v", result)
+	}
+	if got.Get("start_time") != "1696118400" {
+		t.Fatalf("expected start_time=1696118400, got %q", got.Get("start_time"))
+	}
+	if got.Get("end_time") != "1698710400" {
+		t.Fatalf("expected end_time=1698710400, got %q", got.Get("end_time"))
+	}
+}
+
+func TestQueueWorkerRunPostsToQueuedRuns(t *testing.T) {
+	var got struct {
+		Method string
+		Path   string
+		Body   map[string]any
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got.Method = r.Method
+		got.Path = r.URL.Path
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if err := json.Unmarshal(body, &got.Body); err != nil {
+			t.Fatalf("unmarshal body %q: %v", string(body), err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"queued":true,"queue_ref":"22","queue_status":"waiting"}}`))
+	}))
+	defer upstream.Close()
+
+	client := NewCoreClawClient("token", upstream.URL)
+	spec := mustV2ToolSpec(t, "queue_worker_run")
+	result, err := spec.Handler(client)(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Arguments: map[string]any{
+				"worker_id":  "demo-worker",
+				"input_json": `{"keyword":"coffee"}`,
+				"is_async":   true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("expected success result, got %+v", result)
+	}
+	if got.Method != http.MethodPost {
+		t.Fatalf("expected POST, got %s", got.Method)
+	}
+	if got.Path != "/api/v2/workers/demo-worker/queued-runs" {
+		t.Fatalf("unexpected path: %s", got.Path)
+	}
+	// input_json is wrapped as input.parameters.custom, same as run_worker.
+	input, ok := got.Body["input"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected input object, got %#v", got.Body["input"])
+	}
+	custom := input["parameters"].(map[string]any)["custom"].(map[string]any)
+	if custom["keyword"] != "coffee" {
+		t.Fatalf("unexpected input.parameters.custom: %#v", custom)
+	}
+}
+
+func TestReleaseRunQueueItemPostsQueueIdInPath(t *testing.T) {
+	var got struct {
+		Method string
+		Path   string
+		Body   map[string]any
+	}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got.Method = r.Method
+		got.Path = r.URL.Path
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		_ = json.Unmarshal(body, &got.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"results":[{"queue_ref":"22","success":true}]}}`))
+	}))
+	defer upstream.Close()
+
+	client := NewCoreClawClient("token", upstream.URL)
+	spec := mustV2ToolSpec(t, "release_run_queue_item")
+	result, err := spec.Handler(client)(context.Background(), mcp.CallToolRequest{
+		Params: mcp.CallToolParams{
+			Arguments: map[string]any{
+				"queue_id": "22",
+				"reason":   "no longer needed",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if result == nil || result.IsError {
+		t.Fatalf("expected success result, got %+v", result)
+	}
+	if got.Method != http.MethodPost {
+		t.Fatalf("expected POST, got %s", got.Method)
+	}
+	if got.Path != "/api/v2/run-queue/items/22/release" {
+		t.Fatalf("unexpected path: %s", got.Path)
+	}
+	if got.Body["reason"] != "no longer needed" {
+		t.Fatalf("expected reason in body, got %#v", got.Body["reason"])
 	}
 }
 
