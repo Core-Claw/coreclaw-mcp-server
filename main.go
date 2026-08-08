@@ -35,6 +35,15 @@ func main() {
 		addr := fmt.Sprintf(":%d", *port)
 		httpServer := server.NewStreamableHTTPServer(s,
 			server.WithHTTPContextFunc(apiKeyFromHeader),
+			// mcp-go v0.57+ rejects requests whose connection is loopback but
+			// whose Host header is not (DNS rebinding protection). Behind the
+			// nginx reverse proxy on the production host, connections arrive
+			// via 127.0.0.1 while Host stays mcp.coreclaw.com, so the
+			// protection must be disabled here. The public surface is
+			// already gated by nginx TLS + the CoreClaw API key in
+			// apiKeyFromHeader; the nginx server block is the layer that
+			// should own Host validation.
+			server.WithDisableLocalhostProtection(true),
 		)
 		// Coze HTTP plugins call individual tools at /mcp/<tool_name>; the
 		// MCP streamable endpoint itself stays at exact path /mcp.
